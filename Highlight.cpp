@@ -32,13 +32,13 @@ static char *s_frontTags[] = {
 	"<span class=\"gbcnst gbcnst08\">" ,
 	"<span class=\"gbcnst gbcnst09\">" 
 };
-//long s_frontTagLen=gbstrlen("<b style=color:black;background-color:#990099>");
-long s_frontTagLen=gbstrlen("<span class=\"gbcnst gbcnst00\">");
+//int32_t s_frontTagLen=gbstrlen("<b style=color:black;background-color:#990099>");
+int32_t s_frontTagLen=gbstrlen("<span class=\"gbcnst gbcnst00\">");
 
 // include the css style sheet for the highlight tags
 //static char *s_styleSheetInc =  "<link rel=\"stylesheet\" type=\"text/css\" "
 //			"href=\"~/cachedpagestyles.css\">";
-//long s_styleSheetIncLen = gbstrlen( s_styleSheetInc );
+//int32_t s_styleSheetIncLen = gbstrlen( s_styleSheetInc );
 
 static char *s_styleSheet =
 "<style type=\"text/css\">"
@@ -64,7 +64,7 @@ static char *s_styleSheet =
 "span.gbcnst08x{color:white;background-color:black;border:2px solid #004699}"
 "span.gbcnst09x{color:white;background-color:black;border:2px solid #990099}"
 "</style>";
-long s_styleSheetLen = gbstrlen( s_styleSheet );
+int32_t s_styleSheetLen = gbstrlen( s_styleSheet );
 
 //buffer for writing term list items
 char s_termList[1024];
@@ -73,10 +73,11 @@ char s_termList[1024];
 // . content must be NULL terminated
 // . if "useAnchors" is true we do click and scroll
 // . if "isQueryTerms" is true, we do typical anchors in a special way
-long Highlight::set ( char        *buf          ,
-		      long         bufLen       ,
+int32_t Highlight::set ( SafeBuf *sb,
+		      //char        *buf          ,
+		      //int32_t         bufLen       ,
 		      char        *content      ,
-		      long         contentLen   ,
+		      int32_t         contentLen   ,
 		      // primary language of the document (for synonyms)
 		      char         docLangId    ,
 		      Query       *q            ,
@@ -85,23 +86,24 @@ long Highlight::set ( char        *buf          ,
 		      const char  *baseUrl      ,
 		      const char  *frontTag     ,
 		      const char  *backTag      ,
-		      long         fieldCode    ,
-		      long         niceness      ) {
+		      int32_t         fieldCode    ,
+		      int32_t         niceness      ) {
 
 	Words words;
-	words.set ( content      , 
-		    contentLen   , 
-		    TITLEREC_CURRENT_VERSION,
-		    true         , // computeId
-		    true         ); // has html entites?
+	if ( ! words.set ( content      , 
+			   contentLen   , 
+			   TITLEREC_CURRENT_VERSION,
+			   true         , // computeId
+			   true         ) ) // has html entites?
+		return -1;
 
-	long version = TITLEREC_CURRENT_VERSION;
+	int32_t version = TITLEREC_CURRENT_VERSION;
 
 	Bits bits;
-	if ( ! bits.set (&words,version,niceness) ) return 0;
+	if ( ! bits.set (&words,version,niceness) ) return -1;
 
 	Phrases phrases;
-	if ( !phrases.set(&words,&bits,true,false,version,niceness))return 0;
+	if ( !phrases.set(&words,&bits,true,false,version,niceness))return -1;
 
 	//SafeBuf langBuf;
 	//if ( !setLangVec ( &words , &langBuf , niceness )) return 0;
@@ -114,13 +116,14 @@ long Highlight::set ( char        *buf          ,
 	Matches matches;
 	matches.setQuery ( q );
 
-	if ( ! matches.addMatches ( &words , &phrases ) ) return 0;
+	if ( ! matches.addMatches ( &words , &phrases ) ) return -1;
 
 	// store
 	m_numMatches = matches.getNumMatches();
 
-	return set ( buf         ,
-		     bufLen      , 
+	return set ( sb , 
+		     //buf         ,
+		     //bufLen      , 
 		     &words      ,
 		     &matches    ,
 		     doStemming  ,
@@ -133,8 +136,9 @@ long Highlight::set ( char        *buf          ,
 }
 
 // New version
-long Highlight::set ( char        *buf        ,
-		      long         bufLen     ,
+int32_t Highlight::set ( SafeBuf *sb ,
+		      //char        *buf        ,
+		      //int32_t         bufLen     ,
 		      Words       *words      ,
 		      Matches     *matches    ,
 		      bool         doStemming ,
@@ -142,7 +146,7 @@ long Highlight::set ( char        *buf        ,
 		      const char  *baseUrl    ,
 		      const char  *frontTag   ,
 		      const char  *backTag    ,
-		      long         fieldCode  ,
+		      int32_t         fieldCode  ,
 		      Query	  *q	      ) {
 	// save stuff
 	m_frontTag    = frontTag;
@@ -156,40 +160,46 @@ long Highlight::set ( char        *buf        ,
 	// . set the anchor counts to 1000*i+1 for each possible query term num
 	// . yes, i know, why +1? because we're assuming the query terms
 	//   have been highlighted before us 
-	for ( long i = 0 ; i < MAX_QUERY_TERMS ; i++ ) 
-		m_anchorCounts[i] = 1000*i + 1;
+	//for ( int32_t i = 0 ; i < MAX_QUERY_TERMS ; i++ ) 
+	//	m_anchorCounts[i] = 1000*i + 1;
 	// set lengths of provided front/back highlight tags
 	if ( m_frontTag ) m_frontTagLen = gbstrlen ( frontTag );
 	if ( m_backTag  ) m_backTagLen  = gbstrlen ( backTag  );
 	// point to buffer to store highlighted text into
-	m_buf    = buf;
-	m_bufLen = bufLen;
-	m_bufPtr = buf;
-	// save room for terminating \0
-	m_bufEnd = m_buf + m_bufLen - 1;
+	//m_buf    = buf;
+	//m_bufLen = bufLen;
+	//m_bufPtr = buf;
+	m_sb = sb;
 
-	if ( ! highlightWords ( words, matches, q ) ) return 0;
+	// label it
+	m_sb->setLabel ("highw");
+
+	// save room for terminating \0
+	//m_bufEnd = m_buf + m_bufLen - 1;
+
+	if ( ! highlightWords ( words, matches, q ) ) return -1;
 
 	// null terminate
-	*m_bufPtr = '\0';
+	//*m_bufPtr = '\0';
+	m_sb->nullTerm();
 	// return the length
-	return m_bufPtr - m_buf;
+	return m_sb->length();//m_bufPtr - m_buf;
 }
 
 bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 	// get num of words
-	long numWords = words->getNumWords();
+	int32_t numWords = words->getNumWords();
 	// some convenience ptrs to word info
 	char *w;
-	long  wlen;
+	int32_t  wlen;
 
 	// length of our front tag should be constant
-	long frontTagLen ;
+	int32_t frontTagLen ;
 	if ( m_frontTag ) frontTagLen = m_frontTagLen;
 	else              frontTagLen = s_frontTagLen;
 	// set the back tag, should be constant
 	const char *backTag ;
-	long  backTagLen;
+	int32_t  backTagLen;
 	if ( m_backTag ) {
 		backTag    = m_backTag;
 		backTagLen = m_backTagLen;
@@ -202,14 +212,14 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 	}
 
 	// set nexti to the word # of the first word that matches a query word
-	long nextm = -1;
-	long nexti = -1;
+	int32_t nextm = -1;
+	int32_t nexti = -1;
 	if ( m->m_numMatches > 0 ) {
 		nextm = 0;
 		nexti = m->m_matches[0].m_wordNum;
 	}
 
-	long backTagi = -1;
+	int32_t backTagi = -1;
 	bool inTitle  = false;
 	bool endHead  = false;
 	bool endHtml  = false;
@@ -221,23 +231,25 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 	}
 	*/
 
-	for ( long i = 0 ; i < numWords  ; i++ ) {
+	for ( int32_t i = 0 ; i < numWords  ; i++ ) {
 		// set word's info
 		w    = words->getWord(i);
 		wlen = words->getWordLen(i);
 		endHead = false;
 		endHtml = false;
 		// bail now if out of room
+		/*
 		if ( m_bufPtr + MAX_URL_LEN + 1024 + wlen >= m_bufEnd ) {
 			// don't spam the logs
-			static long long s_lastTime = 0;
-			long long now = gettimeofdayInMilliseconds();
+			static int64_t s_lastTime = 0;
+			int64_t now = gettimeofdayInMilliseconds();
 			if ( now - s_lastTime < 1000 ) return true;
 			log("query: Not enough buffer space to highlight "
 			    "text. Ask Matt to fix.");
 			s_lastTime = now;
 			return true;
 		}
+		*/
 		if ( (words->getTagId(i) ) == TAG_TITLE ) { //<TITLE>
 			if ( words->isBackTag(i) ) inTitle = false;
 			else inTitle = true;
@@ -270,7 +282,7 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 				if ( i + mat->m_numWords > backTagi )
 					backTagi = i + mat->m_numWords;
 
-				//memcpy ( m_bufPtr , backTag , backTagLen );
+				//gbmemcpy ( m_bufPtr , backTag , backTagLen );
 				//m_bufPtr += backTagLen ;
 				//backTagi = -1;
 			}
@@ -282,8 +294,9 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 				//else frontTag = s_frontTags [ p[i] % 10];
 				else frontTag =s_frontTags[mat->m_colorNum%10];
 				// OK...this is UTF-8 output, and ASCII Text
-				strcpy ( m_bufPtr , frontTag );
-				m_bufPtr += frontTagLen;
+				//strcpy ( m_bufPtr , frontTag );
+				//m_bufPtr += frontTagLen;
+				m_sb->safeStrcpy ( (char *)frontTag );
 				//log(LOG_DEBUG, 
 				//    "Highlight: starting phrase %d at word %d\n",
 				//    p[i], i);
@@ -296,8 +309,9 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 		else if ( endHead ) {
 			// include the tags style sheet immediately before
 			// the closing </TITLE> tag
-			memcpy( m_bufPtr, s_styleSheet, s_styleSheetLen );
-			m_bufPtr += s_styleSheetLen;
+			//gbmemcpy( m_bufPtr, s_styleSheet, s_styleSheetLen );
+			m_sb->safeMemcpy( s_styleSheet , s_styleSheetLen );
+			//m_bufPtr += s_styleSheetLen;
 		}
 		//else if ( endHtml ) {
 		//	;
@@ -326,14 +340,16 @@ bool Highlight::highlightWords ( Words *words , Matches *m, Query *q ) {
 		// write the alnum word
 		//m_bufPtr +=latin1ToUtf8(m_bufPtr, m_bufEnd-m_bufPtr,w, wlen);
 		// everything is utf8 now
-		memcpy ( m_bufPtr, w , wlen );
-		m_bufPtr += wlen;
+		//gbmemcpy ( m_bufPtr, w , wlen );
+		//m_bufPtr += wlen;
+		m_sb->safeMemcpy ( w , wlen );
 
 		// back tag
 		if ( i == backTagi-1 ) {
 			// store the back tag
-			memcpy ( m_bufPtr , backTag , backTagLen );
-			m_bufPtr += backTagLen ;
+			//gbmemcpy ( m_bufPtr , backTag , backTagLen );
+			//m_bufPtr += backTagLen ;
+			m_sb->safeMemcpy ( (char *)backTag , backTagLen );
 			//log(LOG_DEBUG, 
 			//    "Highlight: ending phrase %d at word %d\n",
 			//    p[i], i);

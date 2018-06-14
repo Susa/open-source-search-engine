@@ -1,8 +1,8 @@
 #include "gb-include.h"
 
 #include "PageParser.h"
-#include "IndexTable.h"
-#include "IndexTable2.h"
+//#include "IndexTable.h"
+//#include "IndexTable2.h"
 //#include "XmlDoc.h" // addCheckboxSpan()
 
 bool g_inPageParser = false;
@@ -11,7 +11,7 @@ bool g_inPageInject = false;
 // TODO: meta redirect tag to host if hostId not ours
 static bool processLoop ( void *state ) ;
 static bool gotXmlDoc ( void *state ) ;
-static bool sendErrorReply ( void *state , long err ) ;
+static bool sendErrorReply ( void *state , int32_t err ) ;
 
 // . returns false if blocked, true otherwise
 // . sets g_errno on error
@@ -29,10 +29,10 @@ bool sendPageParser ( TcpSocket *s , HttpRequest *r ) {
 bool sendPageParser2 ( TcpSocket   *s , 
 		       HttpRequest *r ,
 		       State8      *st ,
-		       long long    docId ,
+		       int64_t    docId ,
 		       Query       *q ,
 		       // in query term space, not imap space
-		       long long   *termFreqs       ,
+		       int64_t   *termFreqs       ,
 		       // in imap space
 		       float       *termFreqWeights ,
 		       // in imap space
@@ -40,33 +40,33 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		       void        *state ,
 		       void       (* callback)(void *state) ) {
 
-	//log("parser: read sock=%li",s->m_sd);
+	//log("parser: read sock=%"INT32"",s->m_sd);
 
 	// might a simple request to addsomething to validated.*.txt file
 	// from XmlDoc::print() or XmlDoc::validateOutput()
 	char *add = r->getString("add",NULL);
-	//long long uh64 = r->getLongLong("uh64",0LL);
+	//int64_t uh64 = r->getLongLong("uh64",0LL);
 	char *uh64str = r->getString("uh64",NULL);
 	//char *divTag = r->getString("div",NULL);
 	if ( uh64str ) {
 		// convert add to number
-		long addNum = 0;
+		int32_t addNum = 0;
 		if ( to_lower_a(add[0])=='t' ) // "true" or "false"?
 			addNum = 1;
 		// convert it. skip beginning "str" inserted to prevent
-		// javascript from messing with the long long since it
+		// javascript from messing with the int64_t since it
 		// was rounding it!
-		//long long uh64 = atoll(uh64str);//+3);
+		//int64_t uh64 = atoll(uh64str);//+3);
 		// urldecode that
-		//long divTagLen = gbstrlen(divTag);
-		//long newLen  = urlDecode ( divTag , divTag , divTagLen );
+		//int32_t divTagLen = gbstrlen(divTag);
+		//int32_t newLen  = urlDecode ( divTag , divTag , divTagLen );
 		// null term?
 		//divTag[newLen] = '\0';
 		// do it. this is defined in XmlDoc.cpp
 		//addCheckboxSpan ( uh64 , divTag , addNum );
 		// make basic reply
 		char *reply;
-		reply = "HTTP/1.1 200 OK\r\n"
+		reply = "HTTP/1.0 200 OK\r\n"
 			"Connection: Close\r\n";
 		// that is it! send a basic reply ok
 		bool status = g_httpServer.sendDynamicPage( s , 
@@ -88,7 +88,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		catch ( ... ) {
 			g_errno = ENOMEM;
 			log("PageParser: new(%i): %s", 
-			    sizeof(State8),mstrerror(g_errno));
+			    (int)sizeof(State8),mstrerror(g_errno));
 			return g_httpServer.sendErrorReply(s,500,
 						       mstrerror(g_errno));}
 		mnew ( st , sizeof(State8) , "PageParser" );
@@ -101,7 +101,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	st->m_termFreqs       = termFreqs;
 	st->m_termFreqWeights = termFreqWeights;
 	st->m_affWeights      = affWeights;
-	st->m_total           = (score_t)-1;
+	//st->m_total           = (score_t)-1;
 	st->m_indexCode       = 0;
 	st->m_blocked         = false;
 	st->m_didRootDom      = false;
@@ -116,7 +116,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	g_inPageParser = true;
 
 	// password, too
-	long pwdLen = 0;
+	int32_t pwdLen = 0;
 	char *pwd = r->getString ( "pwd" , &pwdLen );
 	if ( pwdLen > 31 ) pwdLen = 31;
 	if ( pwdLen > 0 ) strncpy ( st->m_pwd , pwd , pwdLen );
@@ -129,6 +129,8 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	char *coll    = r->getString ( "c" , &st->m_collLen ,NULL /*default*/);
 	if ( st->m_collLen > MAX_COLL_LEN )
 		return sendErrorReply ( st , ENOBUFS );
+	if ( ! coll )
+		return sendErrorReply ( st , ENOCOLLREC );
 	strcpy ( st->m_coll , coll );
 
 	// version to use, if -1 use latest
@@ -137,11 +139,11 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		st->m_titleRecVersion = TITLEREC_CURRENT_VERSION;
 	// default to 0 if not provided
 	st->m_hopCount = r->getLong("hc",0);
-	//long  ulen    = 0;
+	//int32_t  ulen    = 0;
 	//char *u     = r->getString ( "u" , &ulen     , NULL /*default*/);
-	long  old     = r->getLong   ( "old", 0 );
+	int32_t  old     = r->getLong   ( "old", 0 );
 	// set query
-	long qlen;
+	int32_t qlen;
 	char *qs = r->getString("q",&qlen,NULL);
 	if ( qs ) st->m_tq.set2 ( qs , langUnknown , true );
 	// url will override docid if given
@@ -163,7 +165,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	// range.
 	st->m_oips     = r->getLong("oips"    ,0);
 
-	long  linkInfoLen  = 0;
+	int32_t  linkInfoLen  = 0;
 	// default is NULL
 	char *linkInfoColl = r->getString ( "oli" , &linkInfoLen, NULL );
 	if ( linkInfoColl ) strcpy ( st->m_linkInfoColl , linkInfoColl );
@@ -204,18 +206,25 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	char *oips   = "";
 	char *us     = "";
 	if ( st->m_u && st->m_u[0] ) us = st->m_u;
-	//if ( st->m_sfn != -1 ) sprintf ( rtu , "%li",st->m_sfn );
+	//if ( st->m_sfn != -1 ) sprintf ( rtu , "%"INT32"",st->m_sfn );
 	if ( st->m_old ) dd = " checked";
 	if ( st->m_recycle            ) rr     = " checked";
 	if ( st->m_recycle2           ) rr2    = " checked";
 	if ( st->m_render             ) render = " checked";
 	if ( st->m_oips               ) oips   = " checked";
 
-	long clen;
+	xbuf->safePrintf(
+			 "<style>"
+			 ".poo { background-color:#%s;}\n"
+			 "</style>\n" ,
+			 LIGHT_BLUE );
+
+
+	int32_t clen;
 	char *contentParm = r->getString("content",&clen,"");
 	
 	// print the input form
-	xbuf->safePrintf ("<br>"
+	xbuf->safePrintf (
 		       "<style>\n"
 		       "h2{font-size: 12px; color: #666666;}\n"
 
@@ -233,21 +242,30 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		       ".hs {color: #009900;}"
 		       "</style>\n"
 		       "<center>"
-		  "<table cellpadding=3>"
-		  "<tr>"
+
+		  "<table %s>"
+
+			  "<tr><td colspan=5><center><b>"
+			  "Parser"
+			  "</b></center></td></tr>\n"
+
+		  "<tr class=poo>"
 		  "<td>"
-		  "Url:"
+		  "<b>url</b>"
+			  "<br><font size=-2>"
+			  "Type in <b>FULL</b> url to parse."
+			  "</font>"
+		  "</td>"
+
 		  "</td>"
 		  "<td>"
 		  "<input type=text name=u value=\"%s\" size=\"40\">\n"
 		  "</td>"
-		  "<td>"
-		  "Type in <b>FULL</b> url\n"
-		  "</td>"
 		  "</tr>"
 
 
-		  "<tr>"
+			  /*
+		  "<tr class=poo>"
 		  "<td>"
 		  "Parser version to use: "
 		  "</td>"
@@ -258,33 +276,38 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		  "(-1 means to use latest title rec version)<br>"
 		  "</td>"
 		  "</tr>"
+			  */
 
-		  "<tr>"
+			  /*
+		  "<tr class=poo>"
 		  "<td>"
 		  "Hop count to use: "
 		  "</td>"
 		  "<td>"
-		  "<input type=text name=\"hc\" size=\"4\" value=\"%li\"> "
+		  "<input type=text name=\"hc\" size=\"4\" value=\"%"INT32"\"> "
 		  "</td>"
 		  "<td>"
 		  "(-1 is unknown. For root urls hopcount is always 0)<br>"
 		  "</td>"
 		  "</tr>"
+			  */
 
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
-		  "Use cached:"
+			  "<b>use cached</b>"
+
+			  "<br><font size=-2>"
+			  "Load page from cache (titledb)?"
+			  "</font>"
+
 		  "</td>"
 		  "<td>"
 		  "<input type=checkbox name=old value=1%s> "
 		  "</td>"
-		  "<td>"
-		  "Load page from cache (titledb)?"
-		  "</td>"
 		  "</tr>"
 
 			  /*
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
 		  "Reparse root:"
 		  "</td>"
@@ -297,19 +320,23 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		  "</tr>"
 			  */
 
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
-		  "Recycle Link Info:"
+		  "<b>recycle link info</b>"
+
+			  "<br><font size=-2>"
+			  "Recycle the link info from the title rec"
+			  "Load page from cache (titledb)?"
+			  "</font>"
+
 		  "</td>"
 		  "<td>"
 		  "<input type=checkbox name=recycle value=1%s> "
 		  "</td>"
-		  "<td>"
-		  "Recycle the link info from the title rec"
-		  "</td>"
 		  "</tr>"
 
-		  "<tr>"
+			  /*
+		  "<tr class=poo>"
 		  "<td>"
 		  "Recycle Link Info Imported:"
 		  "</td>"
@@ -320,20 +347,24 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		  "Recycle the link info imported from other coll"
 		  "</td>"
 		  "</tr>"
+			  */
 
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
-		  "Render HTML:"
+		  "<b>render html</b>"
+
+			  "<br><font size=-2>"
+			  "Render document content as HTML"
+			  "</font>"
+
 		  "</td>"
 		  "<td>"
 		  "<input type=checkbox name=render value=1%s> "
 		  "</td>"
-		  "<td>"
-		  "Render document content as HTML"
-		  "</td>"
 		  "</tr>"
 
-		  "<tr>"
+			  /*
+		  "<tr class=poo>"
 		  "<td>"
 		  "Lookup outlinks' ruleset, ips, quality:"
 		  "</td>"
@@ -346,7 +377,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		  "</td>"
 		  "</tr>"
 
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
 		  "LinkInfo Coll:"
 		  "</td>"
@@ -357,65 +388,84 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		  "Leave empty usually. Uses this coll to lookup link info."
 		  "</td>"
 		  "</tr>"
+			  */
 
-		  "<tr>"
+		  "<tr class=poo>"
 		  "<td>"
-		  "Optional query:"
+		  "<b>optional query</b>"
+
+			  "<br><font size=-2>"
+			  "Leave empty usually. For title generation only."
+			  "</font>"
+
 		  "</td>"
 		  "<td>"
 		  "<input type=text name=\"q\" size=\"20\" value=\"\"> "
 		  "</td>"
-		  "<td>"
-		  "Leave empty usually. For title generation only."
-		  "</td>"
-		  "</tr>"
+		       "</tr>",
 
-		  "<tr>"
-		  "<td>"
-		  "Content Below is XML:"
-		  "</td>"
-		  "<td>"
-		  "<input type=checkbox name=xml value=1> "
-		  "</td>"
-		  "<td>"
-			  //""
-		  "</td>"
-		  "</tr>"
+			  TABLE_STYLE,
+			  us ,
+			   dd,
+			   rr, 
+			   render
+			  );
 
+	xbuf->safePrintf(
+		  "<tr class=poo>"
+			  "<td>"
+			  "<b>content type below is</b>"
+			  "<br><font size=-2>"
+			  "Is the content below HTML? XML? JSON?"
+			  "</font>"
+			  "</td>"
 
+		  "<td>"
+		       //"<input type=checkbox name=xml value=1> "
+		       "<select name=ctype>\n"
+		       "<option value=%"INT32" selected>HTML</option>\n"
+		       "<option value=%"INT32">XML</option>\n"
+		       "<option value=%"INT32">JSON</option>\n"
+		       "</select>\n"
 
-			  "<tr>"
-			  "<td colspan=3>"
+		  "</td>"
+		       "</tr>",
+		       (int32_t)CT_HTML,
+		       (int32_t)CT_XML,
+		       (int32_t)CT_JSON
+			  );
+
+	xbuf->safePrintf(
+
+			  "<tr class=poo>"
+			  "<td><b>content</b>"
+			  "<br><font size=-2>"
+			  "Use this content for the provided <i>url</i> "
+			  "rather than downloading it from the web."
+			  "</td>"
+
+			  "<td>"
 			  "<textarea rows=10 cols=80 name=content>"
 			  "%s"
 			  "</textarea>"
 			  "</td>"
 			  "</tr>"
 
-		  "<tr>"
-		  "<td colspan=\"3\">"
-		  "<input type=submit value=OK>"
-		  "</td>"
-		  "</tr>"
 		  "</table>"
 		  "</center>"
 		  "</form>"
 		  "<br>",
-			  us ,
-			   (long)st->m_hopCount,
-			   //rtu,
-			   dd,
-			  //artr , 
-			   rr, 
-			   rr2, 
-			   render , 
-			   oips ,
+
+			  //oips ,
 			  contentParm );
 
 
 
-
-
+	xbuf->safePrintf(
+			 "<center>"
+			 "<input type=submit value=Submit>"
+			 "</center>"
+			 );
 
 
 	// just print the page if no url given
@@ -427,7 +477,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	SpiderRequest sreq;
 	sreq.reset();
 	strcpy(sreq.m_url,st->m_u);
-	long firstIp = hash32n(st->m_u);
+	int32_t firstIp = hash32n(st->m_u);
 	if ( firstIp == -1 || firstIp == 0 ) firstIp = 1;
 	// parentdocid of 0
 	sreq.setKey( firstIp, 0LL, false );
@@ -444,7 +494,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	// . get provided content if any
 	// . will be NULL if none provided
 	// . "content" may contain a MIME
-	long  contentLen = 0;
+	int32_t  contentLen = 0;
 	char *content = r->getString ( "content" , &contentLen , NULL );
 	// is the "content" url-encoded? default is true.
 	bool contentIsEncoded = true;
@@ -460,11 +510,14 @@ bool sendPageParser2 ( TcpSocket   *s ,
 	uint8_t contentType = CT_HTML;
 	if ( r->getBool("xml",0) ) contentType = CT_XML;
 
+	contentType = r->getLong("ctype",contentType);//CT_HTML);
+
+
 	// if facebook, load xml content from title rec...
 	bool isFacebook = (bool)strstr(st->m_u,"http://www.facebook.com/");
 	if ( isFacebook && ! content ) {
-		long long docId = g_titledb.getProbableDocId(st->m_u);
-		sprintf(sreq.m_url ,"%llu", docId );
+		int64_t docId = g_titledb.getProbableDocId(st->m_u);
+		sprintf(sreq.m_url ,"%"UINT64"", docId );
 		sreq.m_isPageReindex = true;
 	}
 
@@ -473,7 +526,7 @@ bool sendPageParser2 ( TcpSocket   *s ,
 		st->m_dbuf.purge();
 		st->m_dbuf.safeStrcpy(content);
 		//char *data = strstr(content,"\r\n\r\n");
-		//long dataPos = 0;
+		//int32_t dataPos = 0;
 		//if ( data ) dataPos = (data + 4) - content;
 		//st->m_dbuf.convertJSONtoXML(0,dataPos);
 		//st->m_dbuf.decodeJSON(0);
@@ -508,19 +561,20 @@ bool processLoop ( void *state ) {
 	// get the xmldoc
 	XmlDoc *xd = &st->m_xd;
 
-	// . save the ips.txt file if we are the test coll
-	// . saveTestBuf() is a function in Msge1.cpp
-	if ( xd && xd->m_coll && ! strcmp ( xd->m_coll , "test")) 
-		// use same dir that XmlDoc::getTestDir() would use
-		saveTestBuf ( "test-page-parser" );
-
 	// error?
 	if ( g_errno ) return sendErrorReply ( st , g_errno );
 
-	// shortcut
+	// int16_tcut
 	SafeBuf *xbuf = &st->m_xbuf;
 
 	if ( st->m_u && st->m_u[0] ) {
+		// . save the ips.txt file if we are the test coll
+		// . saveTestBuf() is a function in Msge1.cpp
+		CollectionRec *cr = xd->getCollRec();
+		if ( xd && cr && cr->m_coll && !strcmp(cr->m_coll,"qatest123"))
+			// use same dir that XmlDoc::getTestDir() would use
+			//saveTestBuf ( "test-page-parser" );
+			saveTestBuf("qa");
 		// now get the meta list, in the process it will print out a 
 		// bunch of junk into st->m_xbuf
 		char *metalist = xd->getMetaList ( );
@@ -545,7 +599,7 @@ bool processLoop ( void *state ) {
 	// print the final tail
 	//p += g_httpServer.printTail ( p , pend - p );
 
-	//log("parser: send sock=%li",st->m_s->m_sd);
+	//log("parser: send sock=%"INT32"",st->m_s->m_sd);
 	
 	// now encapsulate it in html head/tail and send it off
 	bool status = g_httpServer.sendDynamicPage( st->m_s , 
@@ -570,7 +624,7 @@ bool processLoop ( void *state ) {
 
 
 // returns true
-bool sendErrorReply ( void *state , long err ) {
+bool sendErrorReply ( void *state , int32_t err ) {
 	// ensure this is set
 	if ( ! err ) { char *xx=NULL;*xx=0; }
 	// get it
@@ -600,7 +654,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	catch ( ... ) {
 		g_errno = ENOMEM;
 		log("PageParser: new(%i): %s", 
-		    sizeof(State8),mstrerror(g_errno));
+		    (int)sizeof(State8),mstrerror(g_errno));
 		return g_httpServer.sendErrorReply(s,500,
 						   mstrerror(g_errno));}
 	mnew ( st , sizeof(State8) , "PageParser" );
@@ -611,7 +665,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	//st->m_termFreqs       = termFreqs;
 	//st->m_termFreqWeights = termFreqWeights;
 	//st->m_affWeights      = affWeights;
-	st->m_total           = (score_t)-1;
+	//st->m_total           = (score_t)-1;
 	st->m_indexCode       = 0;
 	st->m_blocked         = false;
 	st->m_didRootDom      = false;
@@ -620,7 +674,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	st->m_u               = NULL;
 
 	// password, too
-	long pwdLen = 0;
+	int32_t pwdLen = 0;
 	char *pwd = r->getString ( "pwd" , &pwdLen );
 	if ( pwdLen > 31 ) pwdLen = 31;
 	if ( pwdLen > 0 ) strncpy ( st->m_pwd , pwd , pwdLen );
@@ -634,7 +688,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	char *coll    = r->getString ( "c" , &st->m_collLen ,NULL /*default*/);
 	if ( ! coll ) coll = g_conf.m_defaultColl;
 	if ( ! coll ) coll = "main";
-	long collLen = gbstrlen(coll);
+	int32_t collLen = gbstrlen(coll);
 	if ( collLen > MAX_COLL_LEN ) return sendErrorReply ( st , ENOBUFS );
 	strcpy ( st->m_coll , coll );
 
@@ -644,16 +698,16 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 		st->m_titleRecVersion = TITLEREC_CURRENT_VERSION;
 	// default to 0 if not provided
 	st->m_hopCount = r->getLong("hc",0);
-	long  old     = r->getLong   ( "old", 0 );
+	int32_t  old     = r->getLong   ( "old", 0 );
 	// set query
-	long qlen;
+	int32_t qlen;
 	char *qs = r->getString("q",&qlen,NULL);
 	if ( qs ) st->m_tq.set2 ( qs , langUnknown , true );
 	// url will override docid if given
 	st->m_docId = r->getLongLong ("d",-1);
 	st->m_docId = r->getLongLong ("docid",st->m_docId);
 
-	long ulen;
+	int32_t ulen;
 	char *u = st->m_r.getString("u",&ulen,NULL);
 	if ( ! u ) u = st->m_r.getString("url",&ulen,NULL);
 	if ( ! u && st->m_docId == -1LL ) 
@@ -677,7 +731,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	st->m_oips     = r->getLong("oips"    ,0);
 	//st->m_page = r->getLong("page",1);
 
-	long  linkInfoLen  = 0;
+	int32_t  linkInfoLen  = 0;
 	// default is NULL
 	char *linkInfoColl = r->getString ( "oli" , &linkInfoLen, NULL );
 	if ( linkInfoColl ) strcpy ( st->m_linkInfoColl , linkInfoColl );
@@ -701,7 +755,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 
 	XmlDoc *xd = &st->m_xd;
 
-	long isXml = r->getLong("xml",0);
+	int32_t isXml = r->getLong("xml",0);
 
 	// if got docid, use that
 	if ( st->m_docId != -1 ) {
@@ -734,7 +788,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	SpiderRequest sreq;
 	sreq.reset();
 	if ( st->m_u ) strcpy(sreq.m_url,st->m_u);
-	long firstIp = hash32n(st->m_u);
+	int32_t firstIp = hash32n(st->m_u);
 	if ( firstIp == -1 || firstIp == 0 ) firstIp = 1;
 	// parentdocid of 0
 	sreq.setKey( firstIp, 0LL, false );
@@ -751,7 +805,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	// . get provided content if any
 	// . will be NULL if none provided
 	// . "content" may contain a MIME
-	long  contentLen = 0;
+	int32_t  contentLen = 0;
 	char *content = r->getString ( "content" , &contentLen , NULL );
 	// is the "content" url-encoded? default is true.
 	bool contentIsEncoded = true;
@@ -764,8 +818,9 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 	// ensure null
 	if ( contentLen == 0 ) content = NULL;
 
-	uint8_t contentType = CT_HTML;
+	//uint8_t contentType = CT_HTML;
 	//if ( isXml ) contentType = CT_XML;
+	int32_t ctype = r->getLong("ctype",CT_HTML);
 
 	// . use the enormous power of our new XmlDoc class
 	// . this returns false if blocked
@@ -778,7 +833,7 @@ bool sendPageAnalyze ( TcpSocket *s , HttpRequest *r ) {
 			  content ,
 			  false, // deletefromindex
 			  0, // forced ip
-			  contentType ))
+			  ctype ))
 		// return error reply if g_errno is set
 		return sendErrorReply ( st , g_errno );
 	// make this our callback in case something blocks
@@ -812,14 +867,14 @@ bool gotXmlDoc ( void *state ) {
 
 	// . save the ips.txt file if we are the test coll
 	// . saveTestBuf() is a function in Msge1.cpp
-	//if ( xd && xd->m_coll && ! strcmp ( xd->m_coll , "test")) 
+	//if ( xd && xd->m_coll && ! strcmp ( xd->m_coll , "qatest123")) 
 	//	// use same dir that XmlDoc::getTestDir() would use
 	//	saveTestBuf ( "test-page-parser" );
 
 	// error?
 	if ( g_errno ) return sendErrorReply ( st , g_errno );
 
-	// shortcut
+	// int16_tcut
 	SafeBuf *xbuf = &st->m_xbuf;
 
 	bool printIt = false;
@@ -856,17 +911,16 @@ bool gotXmlDoc ( void *state ) {
 		if ( g_errno ) return sendErrorReply ( st , g_errno );
 	}
 
-	long isXml = st->m_r.getLong("xml",0);
-	char ctype = CT_HTML;
-	if ( isXml ) ctype = CT_XML;
-
+	int32_t isXml = st->m_r.getLong("xml",0);
+	char ctype2 = CT_HTML;
+	if ( isXml ) ctype2 = CT_XML;
 	// now encapsulate it in html head/tail and send it off
 	bool status = g_httpServer.sendDynamicPage( st->m_s , 
 						    xbuf->getBufStart(), 
 						    xbuf->length() ,
 						    -1, //cachtime
 						    false ,//postreply?
-						    &ctype,
+						    &ctype2,
 						    -1 , //httpstatus
 						    NULL,//cookie
 						    "utf-8");

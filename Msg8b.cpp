@@ -2,18 +2,18 @@
 
 #include "Msg8b.h"
 #include "Collectiondb.h"
-#include "CollectionRec.h"
+//#include "CollectionRec.h"
 
 
 static void gotListWrapper           ( void *state );//, RdbList *list ) ;
-static void handleRequest8b           ( UdpSlot *slot, long niceness );
+static void handleRequest8b           ( UdpSlot *slot, int32_t niceness );
 static void gotMulticastReplyWrapper8b( void *state, void *state2 );
 static void gotCatRecWrapper          ( void *state );//, CatRec *catrec );
 //static void doneSending_ass          ( void *state, UdpSlot *slot );
 // JAB: warning abatement
 //static void gotMsg8bsReplyWrapper     ( void *state, CatRec *catrec );
 //static void gotMsg22sReplyWrapper    ( void *state );
-//static void gotMsgcsReplyWrapper     ( void *state, long ip );
+//static void gotMsgcsReplyWrapper     ( void *state, int32_t ip );
 static Msg8bListQueue g_msg8bQueue[MSG8BQUEUE_SIZE];
 static bool          g_isMsg8bQueueInitialized = false;
 
@@ -36,22 +36,22 @@ bool Msg8b::registerHandler ( ) {
 //   if updateFlag is true then tagdb cache is not used
 bool Msg8b::getCatRec  ( Url     *url              ,
 			 char    *coll             , 
-			 long     collLen          ,
+			 int32_t     collLen          ,
 			 bool     useCanonicalName ,
-			 long       niceness         ,
+			 int32_t       niceness         ,
 			 CatRec *cr               ,
 			 void    *state            ,
 			 void   (* callback)(void *state ) ) {
 	// clear g_errno
 	g_errno = 0;
 	// warning
-	if ( ! coll ) log(LOG_LOGIC,"net: NULL collection. msg8b.");
+	//if ( ! coll ) log(LOG_LOGIC,"net: NULL collection. msg8b.");
 	// store the calling parameters in this class for retrieval by callback
 	m_state          = state;
 	m_callback       = callback;
 	m_url            = url;
-	m_coll           = coll;
-	m_collLen        = collLen;
+	//m_coll           = coll;
+	//m_collLen        = collLen;
 	m_cr             = cr;
 	m_niceness       = niceness;
 
@@ -68,17 +68,18 @@ bool Msg8b::getCatRec  ( Url     *url              ,
 	//m_coll = g_conf.m_dirColl;
 	//m_collLen = gbstrlen(m_coll);
 	// catdb uses a dummy collection now, should not be looked at
-	m_coll = "catdb";
-	m_collLen = 5;
+	//m_coll = "catdb";
+	//m_collLen = 5;
 
-	m_collnum = g_collectiondb.getCollnum ( m_coll , m_collLen );
+	//m_collnum = g_collectiondb.getCollnum ( m_coll , m_collLen );
 
 	// . first, try it by canonical domain name
 	// . if that finds no matches, then try it by ip domain
 	g_catdb.getKeyRange ( isIp, m_url, &startKey, &endKey );
 	
 	// get the groupid
-	m_groupId = startKey.n1 & g_hostdb.m_groupMask;
+	//m_groupId = startKey.n1 & g_hostdb.m_groupMask;
+	m_shardNum = getShardNum ( RDB_CATDB , &startKey );
 	
 	// reset the xml's in case they were already set
 	m_cr->reset();
@@ -87,29 +88,29 @@ bool Msg8b::getCatRec  ( Url     *url              ,
 	//
 	// forward
 	//
-	if ( g_hostdb.m_groupId != m_groupId ) {
+	if ( getMyShardNum() != m_shardNum ) {//g_hostdb.m_groupId!=m_groupId){
 		// coll, url, niceness(1), rdbid(1), useCanonicalName(1)
-		long requestSize = m_collLen + m_url->getUrlLen() + 4 + 4;
+		int32_t requestSize = m_url->getUrlLen() + 4 + 3;
 		// make the request
 		char *p = m_request;
-		*(long *)p = m_url->getIp()     ; p+=4;
+		*(int32_t *)p = m_url->getIp()     ; p+=4;
 		//*p      = RDB_CATDB             ; p++;
 		*p      = (char)niceness        ; p++;
 		*p      = (char)useCanonicalName; p++;
 		// coll
-		memcpy(p, m_coll, m_collLen);
-		p      += m_collLen;
-		*p      = '\0';
-		p++;
+		//gbmemcpy(p, m_coll, m_collLen);
+		//p      += m_collLen;
+		//*p      = '\0';
+		//p++;
 		// url
-		memcpy(p, m_url->getUrl(), m_url->getUrlLen());
+		gbmemcpy(p, m_url->getUrl(), m_url->getUrlLen());
 		 p     += m_url->getUrlLen();
 		*p      = '\0';
 		p++;
 		// size and check
 		m_requestSize = p - m_request;
 		if ( m_requestSize != requestSize ) {
-			log ( "Msg8b: request size %li != %li, bad engineer.",
+			log ( "Msg8b: request size %"INT32" != %"INT32", bad engineer.",
 			      m_requestSize, requestSize );
 			char *xx = NULL; *xx = 0;
 		}
@@ -120,7 +121,7 @@ bool Msg8b::getCatRec  ( Url     *url              ,
 				      m_requestSize,
 				      0x8b,
 				      false,         // multicase own request?
-				      m_groupId,
+				      m_shardNum,//m_groupId,
 				      false,         // send to whole group?
 				      startKey.n1,   // key
 				      this,          // state data
@@ -146,13 +147,13 @@ bool Msg8b::getCatRec  ( Url     *url              ,
 	// local lookup
 	//
 	// min rec sizes
-	//long minRecSizes = 256*1024;
+	//int32_t minRecSizes = 256*1024;
 	// blogspot.com was not showing up! make this 1MB -- MDW
 	
 	// get min rec sizes from the original collection
 	//CollectionRec *cr = g_collectiondb.getRec ( m_coll ,
 	//					    m_collLen );
-	long minRecSizes = g_conf.m_catdbMinRecSizes;
+	int32_t minRecSizes = g_conf.m_catdbMinRecSizes;
 
 	// reset the list completely
 	//m_list.reset();
@@ -186,7 +187,7 @@ bool Msg8b::getCatRec  ( Url     *url              ,
 				0        , // max cached age in seconds (60)
 			        false    , // add net recv'd list to cache?
 				RDB_CATDB, // specifies the rdb, 1 = tagdb
-				m_coll   ,
+				0,//collnum"",//NULL,//m_coll   ,
 				//&m_list  ,
 				m_list   ,
 				startKey ,
@@ -311,10 +312,10 @@ void Msg8b::gotReply ( ) {
 		log ( "Msg8b: Reply had error: %s", mstrerror(g_errno));
 		return;
 	}
-	long long startTime = gettimeofdayInMilliseconds();
+	int64_t startTime = gettimeofdayInMilliseconds();
 	// get the reply
-	long replySize;
-	long replyMaxSize;
+	int32_t replySize;
+	int32_t replyMaxSize;
 	bool freeit;
 	char *reply = m_mcast.getBestReply ( &replySize,
 					     &replyMaxSize,
@@ -329,17 +330,18 @@ void Msg8b::gotReply ( ) {
 	else if (reply && replySize > 0) {
 		// deserialize
 		char *p = reply;
-		long  dataSize = *(long*)p;     p += 4;
+		int32_t  dataSize = *(int32_t*)p;     p += 4;
 		char *data     =         p;     p += dataSize;
 		bool  gotByIp  =        *p;     p++;
 		bool  hadRec   =        *p;     p++;
-		long  numIndCatids = *(long*)p; p+=4;
-		long *indCatids = (long*)p;     p += numIndCatids*4;
+		int32_t  numIndCatids = *(int32_t*)p; p+=4;
+		int32_t *indCatids = (int32_t*)p;     p += numIndCatids*4;
 		
 		// sanity check
 		if (p - reply != replySize) {
-			log("Msg8b: Deserialized reply size %i != %li",
-			    p - reply, replySize );
+			log("Msg8b: Deserialized reply size %"INT32" "
+			    "!= %"INT32"",
+			    (int32_t)(p - reply), replySize );
 			char *xx = NULL; *xx = 0;
 		}
 		QUICKPOLL(m_niceness);
@@ -356,10 +358,10 @@ void Msg8b::gotReply ( ) {
 		// we have to free it
 		mfree ( reply , replyMaxSize , "Msg8b" );
 	}
-	long long now = gettimeofdayInMilliseconds();
-	long long msg8bTook = now - startTime;
+	int64_t now = gettimeofdayInMilliseconds();
+	int64_t msg8bTook = now - startTime;
 	if(msg8bTook > 10)
-		log(LOG_INFO, "admin: gotreply for msg8b took %lli", 
+		log(LOG_INFO, "admin: gotreply for msg8b took %"INT64"", 
 		    msg8bTook);
 	
 }
@@ -370,38 +372,39 @@ public:
 	CatRec     m_catrec;
 	UdpSlot    *m_slot;
 	UdpServer  *m_us;
-	long        m_niceness;
+	int32_t        m_niceness;
 	//char        m_rdbId;
 	Url         m_url;
 };
 
 // . request for a CatRec
 // . must call g_udpServer.senReply() or sendErrorReply()
-void handleRequest8b ( UdpSlot *slot, long netnice ) {
+void handleRequest8b ( UdpSlot *slot, int32_t netnice ) {
 	// if niceness is 0, use the higher priority udpServer
 	UdpServer *us = &g_udpServer;
 	//if ( netnice == 0 ) us = &g_udpServer2;
 	// get the request
 	char *request     = slot->m_readBuf;
-	long  requestSize = slot->m_readBufSize;
+	int32_t  requestSize = slot->m_readBufSize;
 	// parse the request
 	char *p       = request;
-	long ip       = *(long *)p ; p+=4;
+	int32_t ip       = *(int32_t *)p ; p+=4;
 	//char rdbId    = *p         ; p++;
-	long niceness = (long)*p   ; p++;
+	int32_t niceness = (int32_t)*p   ; p++;
 	bool useCanonicalName =  *p; p++;
 	// coll
-	char *coll    = p;
-	long  collLen = gbstrlen(coll);
-	p += collLen + 1;
+	//char *coll    = p;
+	//int32_t  collLen = gbstrlen(coll);
+	//p += collLen + 1;
 	// url
 	char *url     = p;
-	long  urlLen  = gbstrlen(url);
+	int32_t  urlLen  = gbstrlen(url);
 	p += urlLen + 1;
 	// sanity check
 	if (p - request != requestSize) {
-		log("build: Msg8b: Read Request Size %i != %li, bad engineer.",
-		    p - request, requestSize);
+		log("build: Msg8b: Read Request Size %"INT32" != %"INT32", "
+		    "bad engineer.",
+		    (int32_t)(p - request), requestSize);
 		char *xx = NULL; *xx = 0;
 	}
 	// create the state
@@ -409,7 +412,8 @@ void handleRequest8b ( UdpSlot *slot, long netnice ) {
 	try { st8b = new (State08b); }
 	catch ( ... ) { 
 		g_errno = ENOMEM;
-		log("Msg8b: new(%i): %s", sizeof(State08b),mstrerror(g_errno));
+		log("Msg8b: new(%i): %s", 
+		    (int)sizeof(State08b),mstrerror(g_errno));
 		us->sendErrorReply ( slot, g_errno ); 
 		return; 
 	}
@@ -423,8 +427,8 @@ void handleRequest8b ( UdpSlot *slot, long netnice ) {
 	st8b->m_url.setIp(ip);
 	// call the local msg8b to get the site rec
 	if ( ! st8b->m_msg8b.getCatRec ( &st8b->m_url,
-					 coll,
-					 collLen,
+					 NULL,//coll,
+					 0,//collLen,
 					 useCanonicalName,
 					 niceness,
 					 &st8b->m_catrec,
@@ -453,7 +457,7 @@ void gotCatRecWrapper ( void *state ) { // , CatRec *catrec ) {
 		return;
 	}
 	// serialize the reply: data, dataSize(4), gotByIp(1), hadRec(1),
-	long  dataSize = catrec->m_dataSize + 6;
+	int32_t  dataSize = catrec->m_dataSize + 6;
 	// add indirect catids: numIndCatids(4), indCatids
 	dataSize += 4 + catrec->m_numIndCatids*4;
 	// check if we're bigger than the tmp buf
@@ -461,7 +465,7 @@ void gotCatRecWrapper ( void *state ) { // , CatRec *catrec ) {
 	if (dataSize > TMPBUFSIZE) {
 		data = (char*)mmalloc(dataSize, "Msg8breply"); 
 		if (!data) {
-			log("build: Msg8b: Can't allocate %li bytes for reply.",
+			log("build: Msg8b: Can't allocate %"INT32" bytes for reply.",
 			    dataSize);
 			// clean up the state
 			mdelete ( st8b , sizeof(State08b) , "Msg8b" );
@@ -472,23 +476,23 @@ void gotCatRecWrapper ( void *state ) { // , CatRec *catrec ) {
 		}
 	}
 	p = data;
-	memcpy(p, &catrec->m_dataSize, 4);
+	gbmemcpy(p, &catrec->m_dataSize, 4);
 	p += 4;
-	memcpy(p, catrec->m_data, catrec->m_dataSize);
+	gbmemcpy(p, catrec->m_data, catrec->m_dataSize);
 	p += catrec->m_dataSize;
-	memcpy(p, &catrec->m_gotByIp, 1);
+	gbmemcpy(p, &catrec->m_gotByIp, 1);
 	p++;
-	memcpy(p, &catrec->m_hadRec, 1);
+	gbmemcpy(p, &catrec->m_hadRec, 1);
 	p++;
-	memcpy(p, &catrec->m_numIndCatids, 4);
+	gbmemcpy(p, &catrec->m_numIndCatids, 4);
 	p += 4;
-	memcpy(p, catrec->m_indCatids, catrec->m_numIndCatids*4);
+	gbmemcpy(p, catrec->m_indCatids, catrec->m_numIndCatids*4);
 	p += catrec->m_numIndCatids*4;
 
 	// sanity check
 	if (p - data != dataSize) {
-		log("Msg8b: Reply Size %i != %li",
-		    p - data, dataSize);
+		log("Msg8b: Reply Size %"INT32" != %"INT32"",
+		    (int32_t)(p - data), dataSize);
 		char *xx = NULL; *xx = 0;
 	}
 	// clean up the state
@@ -507,6 +511,9 @@ void gotCatRecWrapper ( void *state ) { // , CatRec *catrec ) {
 // . each normal tagdb record has the following format:
 //      templateKey (12 bytes) then non-NULL-terminated site string
 bool Msg8b::gotList ( ) {
+	// ignore this...
+	if ( g_errno == ENOCOLLREC )
+		g_errno = 0;
 	// return on error
 	if (g_errno){
 		log("build: Had error getting ruleset record: %s.",
@@ -516,7 +523,7 @@ bool Msg8b::gotList ( ) {
 	}
 	// . get the collection rec
 	//CollectionRec *cr = g_collectiondb.getRec ( m_coll , m_collLen );
-	//long siteFileNum = -1;
+	//int32_t siteFileNum = -1;
 	// watch out, if no url just default the damn thing
 	if ( m_url->getUrlLen() <= 0 ) {
 		// use host name as the site
@@ -541,11 +548,11 @@ bool Msg8b::gotList ( ) {
 	char  gotIt = false;
 
 	// record and record size
-	long  recSize;
+	int32_t  recSize;
 	char *rec;
 
 	//rec = g_catdb->getRec ( &m_list , m_url , &recSize );
-	rec = g_catdb.getRec(m_list,m_url,&recSize,m_coll,m_collLen);
+	rec = g_catdb.getRec(m_list,m_url,&recSize,NULL,0);//m_coll,m_collLen);
 
 	// if record found then set it and also set gotIt to true
 	if ( rec ) {
@@ -581,18 +588,18 @@ bool Msg8b::gotList ( ) {
 void Msg8b::getIndirectCatids ( ) {
 	// get the indirect catids
 	char *matchRecs[MAX_IND_CATIDS];
-	long  matchRecSizes[MAX_IND_CATIDS];
-	long  numMatches = g_catdb.getIndirectMatches (
+	int32_t  matchRecSizes[MAX_IND_CATIDS];
+	int32_t  numMatches = g_catdb.getIndirectMatches (
 					m_list,
 					m_url,
 					matchRecs,
 					matchRecSizes,
 					MAX_IND_CATIDS,
-					m_coll,
-					m_collLen);
+					NULL,//m_coll,
+					0);//m_collLen);
 	// parse out the catids from the matches
 	m_cr->m_numIndCatids = 0;
-	for ( long i = 0; i < numMatches; i++ ) {
+	for ( int32_t i = 0; i < numMatches; i++ ) {
 		char *p = matchRecs[i];
 		// num catids for this rec
 		char numCatids = *p;
@@ -601,7 +608,7 @@ void Msg8b::getIndirectCatids ( ) {
 		char *pend = p + numCatids*4;
 		while ( m_cr->m_numIndCatids < MAX_IND_CATIDS &&
 			p < pend ) {
-			m_cr->m_indCatids[m_cr->m_numIndCatids] = *(long*)p;
+			m_cr->m_indCatids[m_cr->m_numIndCatids] = *(int32_t*)p;
 			p += 4;
 			m_cr->m_numIndCatids++;
 		}
@@ -616,10 +623,10 @@ void Msg8b::getIndirectCatids ( ) {
 //   local RdbList will be used
 // . returns true if attached to queue, false if not and msg0 should
 //   be called
-bool Msg8b::checkQueueForList ( unsigned long domainHash ) {
+bool Msg8b::checkQueueForList ( uint32_t domainHash ) {
 	// make sure the queue is initialized
 	if ( !g_isMsg8bQueueInitialized ) {
-		for ( long i = 0; i < MSG8BQUEUE_SIZE; i++ ) {
+		for ( int32_t i = 0; i < MSG8BQUEUE_SIZE; i++ ) {
 			g_msg8bQueue[i].m_list.reset();
 			g_msg8bQueue[i].m_numAttached = 0;
 			g_msg8bQueue[i].m_domainHash  = 0xffffffff;
@@ -628,9 +635,9 @@ bool Msg8b::checkQueueForList ( unsigned long domainHash ) {
 		g_isMsg8bQueueInitialized = true;
 	}
 	// loop through the queue looking for the domainHash
-	long firstOpen = -1;
+	int32_t firstOpen = -1;
 	Msg8bListQueue *slot;
-	for (long i = 0; i < MSG8BQUEUE_SIZE; i++) {
+	for (int32_t i = 0; i < MSG8BQUEUE_SIZE; i++) {
 		slot = &g_msg8bQueue[i];
 		// check for open slot
 		if ( slot->m_domainHash == 0xffffffff ) {
@@ -692,7 +699,7 @@ void Msg8b::processSlaves() {
 	//   be careful, close the slot
 	Msg8bListQueue *slot = &g_msg8bQueue[m_queueSlot];
 	slot->m_isOpen = 0;
-	for ( long i = 0; i < slot->m_numAttached; i++ ) {
+	for ( int32_t i = 0; i < slot->m_numAttached; i++ ) {
 		Msg8b *slave = slot->m_attachedMsg8bs[i];
 		// . call the slave's gotList
 		// . if it blocks, it's getting by IP and released

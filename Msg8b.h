@@ -35,9 +35,9 @@ class Msg8b {
 	//   updateFlag=true corresponds to the list add/del/update operation
 	bool getCatRec ( Url     *url              , 
 			 char    *coll             , 
-			 long     collLen          ,
+			 int32_t     collLen          ,
 			 bool     useCanonicalName ,
-			 long     niceness         ,
+			 int32_t     niceness         ,
 			 CatRec  *rec              ,
 			 void    *state            ,
 			 //void   (* callback)(void *state , CatRec *rec ) );
@@ -60,7 +60,7 @@ class Msg8b {
 	//   local RdbList will be used
 	// . returns true if attached to queue, false if not and msg0 should
 	//   be called
-	bool checkQueueForList ( unsigned long domainHash );
+	bool checkQueueForList ( uint32_t domainHash );
 
 	// process queue slaves
 	void processSlaves ( );
@@ -68,11 +68,11 @@ class Msg8b {
 	void cleanSlot     ( );
 
 	// some specified input
-	char  *m_coll;
-	long   m_collLen;
+	//char  *m_coll;
+	//int32_t   m_collLen;
 	Url   *m_url;
 
-	collnum_t m_collnum;
+	//collnum_t m_collnum;
 
 	void    (*m_callback ) ( void *state );//, CatRec *rec );
 	void     *m_state;      // ptr to caller's private state data
@@ -89,26 +89,27 @@ class Msg8b {
 
 	bool m_queueMaster;
 	bool m_queueSlave;
-	long m_queueSlot;
+	int32_t m_queueSlot;
 
 	//bool m_triedIp;
 
-	long m_defaultSiteFileNum;
+	int32_t m_defaultSiteFileNum;
 
-	long m_niceness;
+	int32_t m_niceness;
 
 	// for forwarding
-	unsigned long m_groupId;
+	//uint32_t m_groupId;
+	uint32_t m_shardNum;
 	char          m_request[MSG8B_REQ_SIZE];
-	long          m_requestSize;
+	int32_t          m_requestSize;
 	Multicast     m_mcast;
 
 	// normalized url
 	Url       m_normalizedUrl;
 
 	void     *m_parent;
-	long      m_slotNum;
-	long      m_slotNum2;
+	int32_t      m_slotNum;
+	int32_t      m_slotNum2;
 
 	// used by MsgE to store its data
 	void *m_state2;
@@ -119,8 +120,8 @@ struct Msg8bListQueue {
 	RdbList        m_list;
 	Msg8b          *m_masterMsg8b;
 	Msg8b          *m_attachedMsg8bs[MSG8BQUEUE_MAX_ATTACHED];
-	long           m_numAttached;
-	unsigned long  m_domainHash;
+	int32_t           m_numAttached;
+	uint32_t  m_domainHash;
 	char           m_isOpen;
 };
 

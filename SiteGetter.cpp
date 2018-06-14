@@ -86,9 +86,10 @@ SiteGetter::~SiteGetter ( ) {
 // . TODO: consider setting "state" to null if your url host has tons of inlinx
 bool SiteGetter::getSite ( char   *url      ,
 			   TagRec *gr       ,
-			   long    timestamp,
-			   char   *coll     ,
-			   long    niceness ,
+			   int32_t    timestamp,
+			   //char   *coll     ,
+			   collnum_t collnum,
+			   int32_t    niceness ,
 			   //bool    addTags  ,
 			   void   *state    ,
 			   void (* callback)(void *state) ) {
@@ -96,7 +97,8 @@ bool SiteGetter::getSite ( char   *url      ,
 	// save it
 	m_gr       = gr;
 	m_url      = url;
-	m_coll     = coll;
+	//m_coll     = coll;
+	m_collnum = collnum;
 	//m_addTags  = addTags;
 	m_state    = state;
 	m_callback = callback;
@@ -133,7 +135,7 @@ bool SiteGetter::getSite ( char   *url      ,
 	// bail if nothing else we can do
 	if ( ! gr ) return setSite ( ) ;
 
-	CollectionRec *cr = g_collectiondb.getRec ( coll );
+	CollectionRec *cr = g_collectiondb.getRec ( collnum );
 	// g_errno should be set if this is NULL
 	if ( ! cr ) return true;
 	//if ( ! cr->m_subsiteDetectionEnabled ) return true;
@@ -141,11 +143,11 @@ bool SiteGetter::getSite ( char   *url      ,
 	// check the current tag for an age
 	Tag *tag = gr->getTag("sitepathdepth");
 	// if there and the age is young, skip it
-	long age = -1;
-	//long now = getTimeGlobal();
+	int32_t age = -1;
+	//int32_t now = getTimeGlobal();
 	//if ( tag ) age = now - tag->m_timestamp;
-	// to parse conssitently for the qa test "test" coll use "timestamp"
-	// as the "current time"
+	// to parse conssitently for the qa test "qatest123" coll use 
+	// "timestamp" as the "current time"
 	if ( tag ) age = timestamp - tag->m_timestamp;
 	// if there, at least get it (might be -1)
 	if ( tag ) m_oldSitePathDepth = atol ( tag->getTagData() );
@@ -257,11 +259,11 @@ top:
 	// hash the prefix first to match XmlDoc::hashNoSplit()
 	char *prefix = "siteterm";
 	// hash that and we will incorporate it to match XmlDoc::hashNoSplit()
-	long long ph = hash64 ( prefix , gbstrlen(prefix) );
+	int64_t ph = hash64 ( prefix , gbstrlen(prefix) );
 	// . this should match basically what is in XmlDoc.cpp::hash()
 	// . and this now does not include pages that have no outlinks 
 	//   "underneath" them.
-	long long termId = hash64 ( host , pend - host , ph ) & TERMID_MASK;
+	int64_t termId = hash64 ( host , pend - host , ph ) & TERMID_MASK;
 
 	// get all pages that have this as their termid!
 	key144_t start ;
@@ -274,13 +276,19 @@ top:
 	//   because it is too bushy to be anything else
 	// . i'd say 100 nodes is good enough to qualify as a homestead site
 
-	long minRecSizes = 5000000;
+	int32_t minRecSizes = 5000000;
 	// get the group this list is in
-	unsigned long gid ;
-	gid = getGroupId ( RDB_POSDB , (char *)&start , false ); //split?
+	//uint32_t gid ;
+	//gid = getGroupId ( RDB_POSDB , (char *)&start , false ); //split?
+	//uint32_t shardNum ;
+	//shardNum = getShardNum( RDB_POSDB , (char *)&start , false ); //split?
+
+	// i guess this is split by termid and not docid????
+	int32_t shardNum = g_hostdb.getShardNumByTermId ( &start );
+
 	// we need a group #. the column #.
-	long split = g_hostdb.getGroupNum ( gid );
-	// shortcut
+	//int32_t split = g_hostdb.getGroupNum ( gid );
+	// int16_tcut
 	Msg0 *m = &m_msg0;
 	// get the list. returns false if blocked.
 	if ( ! m->getList ( -1                 , // hostId
@@ -289,7 +297,7 @@ top:
 			    0                  , // maxCacheAge
 			    false              , // addToCache
 			    RDB_POSDB        ,
-			    m_coll             ,
+			    m_collnum             ,
 			    &m_list            ,
 			    (char *)&start     ,
 			    (char *)&end       ,
@@ -313,7 +321,7 @@ top:
 			    true  ,  // allowpagecache?
 			    false ,  // forceLocalIndexdb?
 			    false ,  // doIndexdbSplit? nosplit
-			    split ))
+			    shardNum ) )//split ))
 		return false;
 
 	// return false if this blocked
@@ -354,11 +362,13 @@ bool SiteGetter::gotSiteList ( ) {
 		// mark it so caller knows
 		m_errno = g_errno;
 		// so try again without increasing m_pathDepth
-		m_tryAgain = true;
+		// i've seen a host return EBADRDBID for some reason
+		// and put host #0 in an infinite log spam loop so stop it
+		if ( g_errno != EBADRDBID ) m_tryAgain = true;
 		return true;
 	}
 	// how many urls at this path depth?
-	long count = ( m_list.getListSize() - 6 ) / 6;
+	int32_t count = ( m_list.getListSize() - 6 ) / 6;
 	// if we do not have enough to quality this as a subsite path depth
 	// try the next
 	if ( count < 100 ) { 
@@ -429,7 +439,7 @@ bool SiteGetter::setSite ( ) {
 			return true;
 		}
 		// get the data, including terminating \0
-		memcpy ( m_site , tag->getTagData() , m_siteLen + 1 );
+		gbmemcpy ( m_site , tag->getTagData() , m_siteLen + 1 );
 		// sanity check - must include the \0
 		if (m_site[m_siteLen]!= '\0') {char*xx=NULL;*xx=0;}
 		// all done
@@ -439,7 +449,7 @@ bool SiteGetter::setSite ( ) {
 
 	// . get the host of our normalized url
 	// . assume the hostname is the site
-	long hostLen;
+	int32_t hostLen;
 	char *host = ::getHost ( m_url , &hostLen );
 
 	// no, assume domain since Tagdb.cpp adds the domain as the value
@@ -457,11 +467,11 @@ bool SiteGetter::setSite ( ) {
 	char *x = m_site;
 	// check it
 	if ( ! m_hasSubdomain ) {
-		memcpy ( x , "www.", 4 );
+		gbmemcpy ( x , "www.", 4 );
 		x += 4;
 	}
 	// save it
-	memcpy ( x , host , hostLen );
+	gbmemcpy ( x , host , hostLen );
 	x += hostLen;
 
 	m_siteLen = x - m_site;
@@ -515,7 +525,7 @@ bool SiteGetter::setSite ( ) {
 	//   make it a string so tagdb likes it
 	// . this could be -1 which indicates to use hostname!
 	char buf[12];
-	sprintf ( buf , "%li",m_sitePathDepth);
+	sprintf ( buf , "%"INT32"",m_sitePathDepth);
 
 	// sanity check
 	if ( m_timestamp == 0 ) { char *xx=NULL;*xx=0; }
@@ -526,7 +536,7 @@ bool SiteGetter::setSite ( ) {
 	//TagRec gr;
 	m_addedTag.addTag ( "sitepathdepth" , 
 			    // now XmlDoc must provide it to ensure that are 
-			    // injects into the "test" coll are consistent
+			    // injects into the "qatest123" coll are consistent
 			    m_timestamp     ,//getTime()// use now as timestamp
 			    "sitegit"       , // username
 			    0               , // ip
@@ -534,7 +544,7 @@ bool SiteGetter::setSite ( ) {
 			    gbstrlen(buf)+1   );// dateSize (includes \0)
 
 	// we apply the sitepathdepth tag to tag for this subdomain
-	long hlen; char *host = getHostFast ( m_url , &hlen );
+	int32_t hlen; char *host = getHostFast ( m_url , &hlen );
 
 	// null term temporarily
 	char c = host[hlen];
@@ -587,7 +597,7 @@ bool SiteGetter::setRecognizedSite ( ) {
 	char *path = p;
 
 	// convenience vars
-	long  len = 0;
+	int32_t  len = 0;
 
 	// . deal with site indicators
 	// . these are applied to all domains uniformly
@@ -639,11 +649,11 @@ bool SiteGetter::setRecognizedSite ( ) {
 		char *x = m_site;
 		// store www first if its a domain only url
 		if ( ! m_hasSubdomain ) {
-			memcpy ( x , "www." , 4 );
+			gbmemcpy ( x , "www." , 4 );
 			x += 4;
 		}
 		// store it
-		memcpy ( x , host , p - host );
+		gbmemcpy ( x , host , p - host );
 		x += p - host;
 		// set the length of it
 		m_siteLen = x - m_site;
@@ -664,7 +674,7 @@ bool SiteGetter::setRecognizedSite ( ) {
 	//
 	// popular homesteads
 	//
-	long depth = 0;
+	int32_t depth = 0;
 	// term host
 	char c = *path;
 	*path = '\0';
@@ -687,11 +697,11 @@ bool SiteGetter::setRecognizedSite ( ) {
 		char *x = m_site;
 		// store www first if its a domain only url
 		if ( ! m_hasSubdomain ) {
-			memcpy ( x , "www." , 4 );
+			gbmemcpy ( x , "www." , 4 );
 			x += 4;
 		}
 		// store it
-		memcpy ( x , host , path - host );
+		gbmemcpy ( x , host , path - host );
 		x += path - host;
 		m_siteLen = x - m_site;
 		m_site [ m_siteLen ] = '\0';

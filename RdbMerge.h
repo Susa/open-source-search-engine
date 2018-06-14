@@ -58,15 +58,17 @@ class RdbMerge {
 	// . calls rdb->incorporateMerge() when done with merge or had error
 	// . "maxBufSize" is size of list to get then write (read/write buf)
 	bool merge ( char       rdbId        ,
-		     char      *coll         ,
+		     //char      *coll         ,
+		     collnum_t collnum ,
 		     BigFile   *target       ,
 		     RdbMap    *targetMap    ,
-		     long       id2          ,
-		     long       startFileNum ,
-		     long       numFiles     ,
-		     long       niceness     ,
-		     class DiskPageCache *pc     ,
-		     long long maxTargetFileSize ,
+		     int32_t       id2          ,
+		     int32_t       startFileNum ,
+		     int32_t       numFiles     ,
+		     int32_t       niceness     ,
+		     //class DiskPageCache *pc     ,
+		     void *pc ,
+		     int64_t maxTargetFileSize ,
 		     char       keySize      );
 
 	bool isMerging ( ) { return m_isMerging; };
@@ -98,11 +100,11 @@ class RdbMerge {
 	bool        m_doneMerging;
 
 	// how many dup keys removed from the IndexList merge, if any?
-	long long getDupsRemoved ( ) { return m_dupsRemoved; };
+	int64_t getDupsRemoved ( ) { return m_dupsRemoved; };
 
 	void doSleep();
 
-	long      m_numThreads;
+	int32_t      m_numThreads;
 
 	// private:
 
@@ -112,10 +114,10 @@ class RdbMerge {
 
 	// . we get the units from the master and the mergees from the units
 	class RdbBase  *m_base;
-	long        m_startFileNum;
-	long        m_numFiles;
+	int32_t        m_startFileNum;
+	int32_t        m_numFiles;
 	bool        m_dedup;
-	long        m_fixedDataSize;
+	int32_t        m_fixedDataSize;
 	BigFile    *m_target;
 	RdbMap     *m_targetMap;
 
@@ -124,7 +126,7 @@ class RdbMerge {
 	//key_t       m_lastMaskedKey;
 	char        m_truncationMask[MAX_KEY_BYTES];
 	char        m_lastMaskedKey[MAX_KEY_BYTES];
-	long        m_lastNumRecs;
+	int32_t        m_lastNumRecs;
 
 	//key_t       m_startKey;
 	//key_t       m_endKey;
@@ -144,19 +146,20 @@ class RdbMerge {
 
 	RdbList     m_list;
 
-	long        m_niceness;
+	int32_t        m_niceness;
 
 	// count for indexdb
-	long long   m_dupsRemoved;
+	int64_t   m_dupsRemoved;
 
-	class DiskPageCache *m_pc;
-	long long m_maxTargetFileSize;
+	//class DiskPageCache *m_pc;
+	int64_t m_maxTargetFileSize;
 
-	long      m_id2;
+	int32_t      m_id2;
 
 	// for getting the RdbBase class doing the merge
 	uint8_t   m_rdbId;
-	char      m_coll [ MAX_COLL_LEN + 1 ];
+	//char      m_coll [ MAX_COLL_LEN + 1 ];
+	collnum_t m_collnum;
 
 	char      m_ks;
 };

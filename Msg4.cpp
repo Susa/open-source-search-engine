@@ -16,18 +16,37 @@
 #include "Multicast.h"
 #include "Syncdb.h"
 
+//////////////
+//
+// Send out our records to add every X ms here:
+//
+// Batching up the add requests saves udp traffic
+// on large networks (100+ hosts).
+//
+// . currently: send out adds once every 500ms
+// . when this was 5000ms (5s) it would wait like
+//   5s to spider a url after adding it.
+//
+//////////////
+//#define MSG4_WAIT 500
+
+// article1.html and article11.html are dups but they are being spidered
+// within 500ms of another
+#define MSG4_WAIT 100
+
+
 // we have up to this many outstanding Multicasts to send add requests to hosts
 #define MAX_MCASTS 128
 Multicast  s_mcasts[MAX_MCASTS];
 Multicast *s_mcastHead = NULL;
 Multicast *s_mcastTail = NULL;
-long       s_mcastsOut = 0;
-long       s_mcastsIn  = 0;
+int32_t       s_mcastsOut = 0;
+int32_t       s_mcastsIn  = 0;
 
 // we have one buffer for each host in the cluster
 static char *s_hostBufs     [MAX_HOSTS];
-static long  s_hostBufSizes [MAX_HOSTS];
-static long  s_numHostBufs;
+static int32_t  s_hostBufSizes [MAX_HOSTS];
+static int32_t  s_numHostBufs;
 
 // . each host has a 32k add buffer which is sent when full or every 10 seconds
 // . buffer will be more than 32k if the record to add is larger than 32k
@@ -45,20 +64,21 @@ static Msg4 *s_msg4Tail = NULL;
 
 static void       gotReplyWrapper4 ( void    *state   , void *state2   ) ;
 static void       storeLineWaiters ( ) ;
-static void       handleRequest4   ( UdpSlot *slot    , long  niceness ) ;
+static void       handleRequest4   ( UdpSlot *slot    , int32_t  niceness ) ;
 static void       sleepCallback4   ( int bogusfd      , void *state    ) ;
-static bool       sendBuffer       ( long hostId , long niceness ) ;
+static bool       sendBuffer       ( int32_t hostId , int32_t niceness ) ;
 static Multicast *getMulticast     ( ) ;
 static void       returnMulticast  ( Multicast *mcast ) ;
+//static void processSpecialSignal ( collnum_t collnum , char *p ) ;
 //static bool storeList2 ( RdbList *list , char rdbId , collnum_t collnum,
-//			 bool forceLocal, bool splitList , long niceness );
+//			 bool forceLocal, bool splitList , int32_t niceness );
 static bool storeRec   ( collnum_t      collnum , 
 			 char           rdbId   ,
-			 unsigned long  gid     ,
-			 long           hostId  ,
+			 uint32_t  gid     ,
+			 int32_t           hostId  ,
 			 char          *rec     ,
-			 long           recSize ,
-			 long           niceness ) ;
+			 int32_t           recSize ,
+			 int32_t           niceness ) ;
 
 // all these parameters should be preset
 bool registerHandler4 ( ) {
@@ -67,14 +87,14 @@ bool registerHandler4 ( ) {
 		return false;
 
 	// clear the host bufs
-	s_numHostBufs = g_hostdb.getNumGroups() ;
-	for ( long i = 0 ; i < s_numHostBufs ; i++ )
+	s_numHostBufs = g_hostdb.getNumShards();
+	for ( int32_t i = 0 ; i < s_numHostBufs ; i++ )
 		s_hostBufs[i] = NULL;
 
 	// init the linked list of multicasts
 	s_mcastHead = &s_mcasts[0];
 	s_mcastTail = &s_mcasts[MAX_MCASTS-1];
-	for ( long i = 0 ; i < MAX_MCASTS - 1 ; i++ ) 
+	for ( int32_t i = 0 ; i < MAX_MCASTS - 1 ; i++ ) 
 		s_mcasts[i].m_next = &s_mcasts[i+1];
 	// last guy has nobody after him
 	s_mcastTail->m_next = NULL;
@@ -97,8 +117,11 @@ bool registerHandler4 ( ) {
 	}
 
 	// . register sleep handler every 5 seconds = 5000 ms
+	// . right now MSG4_WAIT is 500ms... i lowered it from 5s
+	//   to speed up spidering so it would harvest outlinks
+	//   faster and be able to spider them right away.
 	// . returns false on failure
-	return g_loop.registerSleepCallback ( 5000 , NULL , sleepCallback4 );
+	return g_loop.registerSleepCallback(MSG4_WAIT,NULL,sleepCallback4 );
 }
 
 static void flushLocal ( ) ;
@@ -116,7 +139,7 @@ void flushLocal ( ) {
 	// put the line waiters into the buffers in case they are not there
 	//storeLineWaiters();
 	// now try to send the buffers
-	for ( long i = 0 ; i < s_numHostBufs ; i++ ) 
+	for ( int32_t i = 0 ; i < s_numHostBufs ; i++ ) 
 		sendBuffer ( i , MAX_NICENESS );
 	g_errno = 0;
 }
@@ -126,24 +149,24 @@ void flushLocal ( ) {
 
 // for holding flush callback data
 static SafeBuf s_callbackBuf;
-static long    s_numCallbacks = 0;
+static int32_t    s_numCallbacks = 0;
 
 class CBEntry {
 public:
-	long long m_timestamp;
+	int64_t m_timestamp;
 	void (*m_callback)(void *);
 	void *m_callbackState;
 };
 
 
-// . injecting into the "test" coll flushes after each inject
+// . injecting into the "qatest123" coll flushes after each inject
 // . returns false if blocked and callback will be called
 bool flushMsg4Buffers ( void *state , void (* callback) (void *) ) {
 	// if all empty, return true now
 	if ( ! hasAddsInQueue () ) return true;
 
 	// how much per callback?
-	long cbackSize = sizeof(CBEntry);
+	int32_t cbackSize = sizeof(CBEntry);
 	// ensure big enough for first call
 	if ( s_callbackBuf.m_capacity == 0 ) { // length() == 0 ) {
 		// make big
@@ -166,8 +189,8 @@ bool flushMsg4Buffers ( void *state , void (* callback) (void *) ) {
 
 	// no room?
 	if ( cb >= cbEnd ) {
-		log("msg4: no room for flush callback. count=%li",
-		    (long)s_numCallbacks);
+		log("msg4: no room for flush callback. count=%"INT32"",
+		    (int32_t)s_numCallbacks);
 		g_errno = EBUFTOOSMALL;
 		return true;
 	}
@@ -189,7 +212,7 @@ bool flushMsg4Buffers ( void *state , void (* callback) (void *) ) {
 	// have start times STRICTLY GREATER THAN that, then we will
 	// be guaranteed that everything we added has been replied to!
 	UdpSlot *slot = g_udpServer.getActiveHead();
-	long long max = 0LL;
+	int64_t max = 0LL;
 	for ( ; slot ; slot = slot->m_next ) {
 		// get its time stamp 
 		if ( slot->m_msgType != 0x04 ) continue;
@@ -221,9 +244,9 @@ bool hasAddsInQueue   ( ) {
 	// if we have a msg4 waiting in line...
 	if ( s_msg4Head               ) return true;
 	// if we have an host buf that has something in it...
-	for ( long i = 0 ; i < s_numHostBufs ; i++ ) {
+	for ( int32_t i = 0 ; i < s_numHostBufs ; i++ ) {
 		if ( ! s_hostBufs[i] ) continue;
-		if ( *(long *)s_hostBufs[i] > 4 ) return true;
+		if ( *(int32_t *)s_hostBufs[i] > 4 ) return true;
 	}
 	// otherwise, we have nothing queued up to add
 	return false;
@@ -239,7 +262,7 @@ bool Msg4::addList ( RdbList *list                   ,
 		     char    *coll                   ,
 		     void    *state                  ,
 		     void  (* callback)(void *state) ,
-		     long     niceness               ,
+		     int32_t     niceness               ,
 		     bool     forceLocal             ,
 		     bool     splitList              ) {
 	// warning
@@ -271,7 +294,7 @@ bool Msg4::addList ( RdbList   *list                   ,
 		     collnum_t  collnum                ,
 		     void      *state                  ,
 		     void    (* callback)(void *state) ,
-		     long       niceness               ,
+		     int32_t       niceness               ,
 		     bool       forceLocal             ,
 		     bool       splitList              ) {
 
@@ -333,7 +356,7 @@ bool Msg4::storeList ( RdbList *list , char rdbId , collnum_t collnum ) {
 		if ( ! s_msg4Head       ) { char *xx =NULL; *xx=0; }
 		// spider hang bug
 		//logf(LOG_DEBUG,
-		//   "db: msg4 blocked. adding to tail. msg4=%li",(long)this);
+		//   "db: msg4 blocked. adding to tail. msg4=%"INT32"",(int32_t)this);
 		s_msg4Tail->m_next = this;
 		s_msg4Tail         = this;
 		return false;
@@ -348,7 +371,7 @@ bool Msg4::storeList ( RdbList *list , char rdbId , collnum_t collnum ) {
 		return true;
 
 	// spider hang bug
-	//logf(LOG_DEBUG,"build: msg4 first in line. msg4=%li",(long)this);
+	//logf(LOG_DEBUG,"build: msg4 first in line. msg4=%"INT32"",(int32_t)this);
 
 	// sanity check
 	if ( s_msg4Head || s_msg4Tail ) { char *xx=NULL; *xx=0; }
@@ -374,10 +397,10 @@ bool storeList2 ( RdbList *list ,
 		  collnum_t collnum ,
 		  bool forceLocal,
 		  bool splitList ,
-		  long niceness ) {
+		  int32_t niceness ) {
 
 	// get groupId of each key
-	unsigned long gid;
+	uint32_t gid;
 	char          key[MAX_KEY_BYTES];
 
 	// sanity check
@@ -401,7 +424,7 @@ bool storeList2 ( RdbList *list ,
 		else              gid = getGroupId ( rdbId , key , splitList );
 
 		char *rec     = list->getCurrentRec();
-		long  recSize = list->getCurrentRecSize();
+		int32_t  recSize = list->getCurrentRecSize();
 
 		// i fixed UdpServer.cpp to NOT call msg4 handlers when in
 		// a quickpoll, in case we receive a niceness 0 msg4 request
@@ -409,7 +432,7 @@ bool storeList2 ( RdbList *list ,
 
 		// convert the gid to the hostid of the first host in this
 		// group. uses a quick hash table.
-		long hostId = g_hostdb.makeHostIdFast ( gid );
+		int32_t hostId = g_hostdb.makeHostIdFast ( gid );
 
 		// . add that rec to this groupId, gid, includes the key
 		// . these are NOT allowed to be compressed (half bit set)
@@ -442,11 +465,11 @@ bool storeList2 ( RdbList *list ,
 
 // returns false if blocked
 bool Msg4::addMetaList ( char  *metaList                , 
-			 long   metaListSize            ,
+			 int32_t   metaListSize            ,
 			 char  *coll                    ,
 			 void  *state                   ,
 			 void (* callback)(void *state) ,
-			 long   niceness                ,
+			 int32_t   niceness                ,
 			 char   rdbId                   ) {
 
 	collnum_t collnum = g_collectiondb.getCollnum ( coll );
@@ -459,13 +482,36 @@ bool Msg4::addMetaList ( char  *metaList                ,
 			     rdbId        );
 }
 
-bool Msg4::addMetaList ( char      *metaList                 , 
-			 long       metaListSize             ,
+bool Msg4::addMetaList ( SafeBuf *sb ,
 			 collnum_t  collnum                  ,
 			 void      *state                    ,
 			 void      (* callback)(void *state) ,
-			 long       niceness                 ,
-			 char       rdbId                    ) {
+			 int32_t       niceness                 ,
+			 char       rdbId                    ,
+			 int32_t       shardOverride ) {
+	return addMetaList ( sb->getBufStart() ,
+			     sb->length() ,
+			     collnum ,
+			     state ,
+			     callback ,
+			     niceness ,
+			     rdbId ,
+			     shardOverride );
+}
+
+
+bool Msg4::addMetaList ( char      *metaList                 , 
+			 int32_t       metaListSize             ,
+			 collnum_t  collnum                  ,
+			 void      *state                    ,
+			 void      (* callback)(void *state) ,
+			 int32_t       niceness                 ,
+			 char       rdbId                    ,
+			 // Rebalance.cpp needs to add negative keys to
+			 // remove foreign records from where they no
+			 // longer belong because of a new hosts.conf file.
+			 // This will be -1 if not be overridden.
+			 int32_t       shardOverride ) {
 
 	// not in progress
 	m_inUse = false;
@@ -474,7 +520,8 @@ bool Msg4::addMetaList ( char      *metaList                 ,
 	if ( metaListSize == 0 ) return true;
 
 	// sanity
-	if ( collnum < 0 || collnum > 1000 ) { char *xx=NULL;*xx=0; }
+	//if ( collnum < 0 || collnum > 1000 ) { char *xx=NULL;*xx=0; }
+	if ( collnum < 0 ) { char *xx=NULL;*xx=0; }
 
 	// if first time set this
 	m_currentPtr   = metaList;
@@ -486,6 +533,9 @@ bool Msg4::addMetaList ( char      *metaList                 ,
 	m_rdbId        = rdbId;
 	m_niceness     = niceness;
 	m_next         = NULL;
+	m_shardOverride = shardOverride;
+
+ retry:
 
 	// get in line if there's a line
 	if ( s_msg4Head ) {
@@ -493,8 +543,9 @@ bool Msg4::addMetaList ( char      *metaList                 ,
 		s_msg4Tail->m_next = this;
 		// we are the new tail
 		s_msg4Tail = this;
-		// debug log
-		log("msg4: queueing body msg4=0x%lx",(long)this);
+		// debug log. seems to happen a lot if not using threads..
+		if ( g_conf.m_useThreads )
+			log("msg4: queueing body msg4=0x%"PTRFMT"",(PTRTYPE)this);
 		// mark it
 		m_inUse = true;
 		// all done then, but return false so caller does not free
@@ -505,11 +556,26 @@ bool Msg4::addMetaList ( char      *metaList                 ,
 	// then do it
 	if ( addMetaList2 ( ) ) return true;
 
-	// sanity check
-	if ( s_msg4Head || s_msg4Tail ) { char *xx=NULL; *xx=0; }
+	// . sanity check
+	// . we sometimes get called with niceness 0 from possibly
+	//   an injection or something and from a quickpoll
+	//   inside addMetList2() in which case our addMetaList2() will
+	//   fail, assuming s_msg4Head got set, BUT it SHOULD be OK because
+	//   being interrupted at the one QUICKPOLL() in addMetaList2()
+	//   doesn't seem like it would hurt.
+	// . FURTHEMORE the multicast seems to always be called with
+	//   MAX_NICENESS so i'm not sure how niceness 0 will really help
+	//   with any of this stuff.
+	//if ( s_msg4Head || s_msg4Tail ) { char *xx=NULL; *xx=0; }
+	if ( s_msg4Head || s_msg4Tail ) {
+		log("msg4: got unexpected head"); // :)
+		goto retry;
+	}
 
-	// spider hang bug
-	logf(LOG_DEBUG,"msg4: queueing head msg4=0x%lx",(long)this);
+	// . spider hang bug
+	// . debug log. seems to happen a lot if not using threads..
+	if ( g_conf.m_useThreads )
+		logf(LOG_DEBUG,"msg4: queueing head msg4=0x%"PTRFMT"",(PTRTYPE)this);
 
 	// mark it
 	m_inUse = true;
@@ -546,7 +612,8 @@ bool Msg4::addMetaList2 ( ) {
 
 	char *pend = m_metaList + m_metaListSize;
 
-	if ( m_collnum < 0 || m_collnum > 1000 ) { char *xx=NULL;*xx=0; }
+	//if ( m_collnum < 0 || m_collnum > 1000 ) { char *xx=NULL;*xx=0; }
+	if ( m_collnum < 0 ) { char *xx=NULL;*xx=0; }
 
 	// store each record in the list into the send buffers
 	for ( ; p < pend ; ) {
@@ -554,7 +621,7 @@ bool Msg4::addMetaList2 ( ) {
 		char rdbId = m_rdbId;
 		if ( rdbId < 0 ) rdbId = *p++;
 		// get nosplit
-		bool nosplit = ( rdbId & 0x80 ) ;
+		//bool nosplit = ( rdbId & 0x80 ) ;
 		// mask off rdbId
 		rdbId &= 0x7f;
 		// get the key of the current record
@@ -563,23 +630,29 @@ bool Msg4::addMetaList2 ( ) {
 		bool del ;
 		if ( *p & 0x01 ) del = false;
 		else             del = true;
+		// tmp debug
+		//if ( del ) { char *xx=NULL;*xx=0;}
 		// get the key size. a table lookup in Rdb.cpp.
-		long ks ;
+		int32_t ks ;
 		if      ( rdbId == RDB_POSDB || rdbId == RDB2_POSDB2) ks = 18;
 		else if ( rdbId == RDB_DATEDB  ) ks = 16;
 		else ks = getKeySizeFromRdbId ( rdbId );
 		// skip key
 		p += ks;
 		// set this
-		bool split = true; if ( nosplit ) split = false;
+		//bool split = true; if ( nosplit ) split = false;
 		// . if key belongs to same group as firstKey then continue
 		// . titledb now uses last bits of docId to determine groupId
 		// . but uses the top 32 bits of key still
 		// . spiderdb uses last 64 bits to determine groupId
 		// . tfndb now is like titledb(top 32 bits are top 32 of docId)
-		uint32_t gid = getGroupId ( rdbId , key , split );
+		//uint32_t gid = getGroupId ( rdbId , key , split );
+		uint32_t shardNum = getShardNum( rdbId , key );
+		// override it from Rebalance.cpp for redistributing records
+		// after updating hosts.conf?
+		if ( m_shardOverride >= 0 ) shardNum = m_shardOverride;
 		// get the record, is -1 if variable. a table lookup.
-		long dataSize;
+		int32_t dataSize;
 		if      ( rdbId==RDB_POSDB || rdbId==RDB2_POSDB2) dataSize = 0;
 		else if ( rdbId == RDB_DATEDB  ) dataSize = 0;
 		else dataSize = getDataSizeFromRdbId ( rdbId );
@@ -589,7 +662,7 @@ bool Msg4::addMetaList2 ( ) {
 		// if variable read that in
 		if ( dataSize == -1 ) {
 			// -1 means to read it in
-			dataSize = *(long *)p;
+			dataSize = *(int32_t *)p;
 			// sanity check
 			if ( dataSize < 0 ) { char *xx=NULL;*xx=0; }
 			// sanity check
@@ -609,14 +682,16 @@ bool Msg4::addMetaList2 ( ) {
  		QUICKPOLL(m_niceness); // MAX_NICENESS);
 		// convert the gid to the hostid of the first host in this
 		// group. uses a quick hash table.
-		long hostId = g_hostdb.makeHostIdFast ( gid );
+		//int32_t hostId = g_hostdb.makeHostIdFast ( gid );
+		Host *hosts = g_hostdb.getShard ( shardNum );
+		int32_t hostId = hosts[0].m_hostId;
 		// . add that rec to this groupId, gid, includes the key
 		// . these are NOT allowed to be compressed (half bit set)
 		//   and this point
 		// . this returns false and sets g_errno on failure
 		if ( storeRec ( m_collnum, 
 				rdbId, 
-				gid, 
+				shardNum,//gid, 
 				hostId, 
 				key, // start of rec, 
 				p - key , // recSize
@@ -624,6 +699,12 @@ bool Msg4::addMetaList2 ( ) {
 			// . point to next record
 			// . will point past records if no more left!
 			m_currentPtr = p; // += recSize;
+			// debug log
+			// int off = (int)(m_currentPtr-m_metaList);
+			// log("msg4: cpoff=%i",off);
+			// if ( off == 5271931 )
+			// 	log("msg4: hey");
+			// debug
 			// get next rec
 			continue;
 		}
@@ -641,10 +722,19 @@ bool Msg4::addMetaList2 ( ) {
 		// room for the data yet, and try again later
 		return false;
 	}
+
+	// . send out all bufs
+	// . before we were caching to reduce packet traffic, but
+	//   since we don't use the network for sending termlists let's
+	//   try going back to making it even more real-time
+	//if ( ! isClockInSync() ) return true;
+	// flush them buffers
+	//flushLocal();
 			       
+	// in case this was being used to hold the data, free it
+	m_tmpBuf.purge();
+
 	return true;
-
-
 }
 
 // . modify each Msg4 request as follows
@@ -652,21 +742,21 @@ bool Msg4::addMetaList2 ( ) {
 // . store these requests in the buffer just like that
 bool storeRec ( collnum_t      collnum , 
 		char           rdbId   ,
-		unsigned long  gid     ,
-		long           hostId  ,
+		uint32_t  shardNum, //gid
+		int32_t           hostId  ,
 		char          *rec     ,
-		long           recSize ,
-		long           niceness ) {
+		int32_t           recSize ,
+		int32_t           niceness ) {
 	// loop back up here if you have to flush the buffer
  retry:
 	// sanity check
-	//if ( recSize==16 && rdbId==RDB_SPIDERDB && *(long *)(rec+12)!=0 ) {
+	//if ( recSize==16 && rdbId==RDB_SPIDERDB && *(int32_t *)(rec+12)!=0 ) {
 	//	char *xx=NULL; *xx=0; }
 	// . how many bytes do we need to store the request?
 	// . USED(4 bytes)/collnum/rdbId(1)/recSize(4bytes)/recData
 	// . "USED" is only used for mallocing new slots really
-	long  needForRec = sizeof(collnum_t) + 1 + 4 + recSize;
-	long  needForBuf = 4 + needForRec;
+	int32_t  needForRec = sizeof(collnum_t) + 1 + 4 + recSize;
+	int32_t  needForBuf = 4 + needForRec;
 	// 8 bytes for the zid
 	needForBuf += 8;
 	// how many bytes of the buffer are occupied or "in use"?
@@ -674,7 +764,7 @@ bool storeRec ( collnum_t      collnum ,
 	// if NULL, try to allocate one
 	if ( ! buf  || s_hostBufSizes[hostId] < needForBuf ) {
 		// how big to make it
-		long size = MAXHOSTBUFSIZE;
+		int32_t size = MAXHOSTBUFSIZE;
 		// must accomodate rec at all costs
 		if ( size < needForBuf ) size = needForBuf;
 		// make them all the same size
@@ -684,8 +774,8 @@ bool storeRec ( collnum_t      collnum ,
 		
 		if(s_hostBufs[hostId]) {
 			//if the old buf was too small, resize
-			memcpy( buf, s_hostBufs[hostId], 
-				*(long*)(s_hostBufs[hostId])); 
+			gbmemcpy( buf, s_hostBufs[hostId], 
+				*(int32_t*)(s_hostBufs[hostId])); 
 			mfree ( s_hostBufs[hostId], 
 				s_hostBufSizes[hostId] , "Msg4b" );
 		}
@@ -693,20 +783,20 @@ bool storeRec ( collnum_t      collnum ,
 		// size to "4" bytes
 		else
 			// itself(4) PLUS the zid (8 bytes)
-			*(long *)buf = 4 + 8;
+			*(int32_t *)buf = 4 + 8;
 		// add it
 		s_hostBufs    [hostId] = buf;
 		s_hostBufSizes[hostId] = size;
 	}
-	// . first long is how much of "buf" is used
+	// . first int32_t is how much of "buf" is used
 	// . includes everything even itself
-	long  used = *(long *)buf;
+	int32_t  used = *(int32_t *)buf;
 	// sanity chec. "used" must include the 4 bytes of itself
 	if ( used < 12 ) { char *xx = NULL; *xx = 0; }
 	// how much total buf space do we have, used or unused?
-	long  maxSize = s_hostBufSizes[hostId];
+	int32_t  maxSize = s_hostBufSizes[hostId];
 	// how many bytes are available in "buf"?
-	long  avail   = maxSize - used;
+	int32_t  avail   = maxSize - used;
 	// if we can not fit list into buffer...
 	if ( avail < needForRec ) {
 		// . send what is already in the buffer and clear it
@@ -727,10 +817,10 @@ bool storeRec ( collnum_t      collnum ,
 	// store the record and all the info for it
 	*(collnum_t *)p = collnum; p += sizeof(collnum_t);
 	*(char      *)p = rdbId  ; p += 1;
-	*(long      *)p = recSize; p += 4;
-	memcpy ( p , rec , recSize ); p += recSize;
+	*(int32_t      *)p = recSize; p += 4;
+	gbmemcpy ( p , rec , recSize ); p += recSize;
 	// update buffer used
-	*(long *)buf = used + (p - start);
+	*(int32_t *)buf = used + (p - start);
 	// all done, did not "block"
 	return true;
 }
@@ -738,16 +828,16 @@ bool storeRec ( collnum_t      collnum ,
 // . returns false if we were UNable to get a multicast to launch the buffer, 
 //   true otherwise
 // . returns false and sets g_errno on error
-bool sendBuffer ( long hostId , long niceness ) {
+bool sendBuffer ( int32_t hostId , int32_t niceness ) {
 	//logf(LOG_DEBUG,"build: sending buf");
 	// how many bytes of the buffer are occupied or "in use"?
 	char *buf       = s_hostBufs    [hostId];
-	long  allocSize = s_hostBufSizes[hostId];
+	int32_t  allocSize = s_hostBufSizes[hostId];
 	// skip if empty
 	if ( ! buf ) return true;
 	// . get size used in buf
 	// . includes everything, including itself!
-	long used = *(long *)buf;
+	int32_t used = *(int32_t *)buf;
 	// if empty, bail
 	if ( used <= 12 ) return true;
 	// grab a vehicle for sending the buffer
@@ -765,19 +855,25 @@ bool sendBuffer ( long hostId , long niceness ) {
 	s_hostBufs [ hostId ] = newBuf;
 	// reset used
 	if ( newBuf ) {
-		*(long *)newBuf = 4;
+		*(int32_t *)newBuf = 4;
 		s_hostBufSizes[hostId] = MAXHOSTBUFSIZE;
 	}
 	else 	s_hostBufSizes[hostId] = 0; //if we were oom reset size
 	*/
 	// get groupId
-	unsigned long groupId = g_hostdb.getGroupIdFromHostId ( hostId );
+	//uint32_t groupId = g_hostdb.getGroupIdFromHostId ( hostId );
+	Host *h = g_hostdb.getHost(hostId);
+	uint32_t shardNum = h->m_shardNum;
 	// get group #
-	//long groupNum = g_hostdb.getGroupNum ( groupId );
+	//int32_t groupNum = g_hostdb.getGroupNum ( groupId );
 
 	// sanity check. our clock must be in sync with host #0's or with
 	// a host from his group, group #0
-	if ( ! isClockInSync() ) { char *xx=NULL ; *xx=0; }
+	if ( ! isClockInSync() ) { 
+		log("msg4: msg4: warning sending out adds but clock not in "
+		    "sync with host #0");
+		//char *xx=NULL ; *xx=0; }
+	}
 	// try to keep all zids unique, regardless of their group
 	static uint64_t s_lastZid = 0;
 	// select a "zid", a sync id
@@ -796,11 +892,11 @@ bool sendBuffer ( long hostId , long niceness ) {
 	p += 8;
 	// syncdb debug
 	if ( g_conf.m_logDebugSpider )
-		logf(LOG_DEBUG,"syncdb: sending msg4 request zid=%llu",zid);
+		logf(LOG_DEBUG,"syncdb: sending msg4 request zid=%"UINT64"",zid);
 
 	// this is the request
 	char *request     = buf;
-	long  requestSize = used;
+	int32_t  requestSize = used;
 	// . launch the request
 	// . we now have this multicast timeout if a host goes dead on it
 	//   and it fails to send its payload
@@ -812,10 +908,10 @@ bool sendBuffer ( long hostId , long niceness ) {
 			   requestSize, // sets mcast->m_msgLen to this
 			   0x04       , // msgType for add rdb record
 			   false      , // does multicast own msg?
-			   groupId    , // group to send to (groupKey)
+			   shardNum,//groupId , // group to send to (groupKey)
 			   true       , // send to whole group?
 			   0          , // key is useless for us
-			   (void *)allocSize  , // state data
+			   (void *)(PTRTYPE)allocSize  , // state data
 			   (void *)mcast      , // state data
 			   gotReplyWrapper4 ,
 			   // this was 60 seconds, but if we saved the
@@ -843,8 +939,8 @@ bool sendBuffer ( long hostId , long niceness ) {
 	}
 
 	// g_errno should be set
-	log("net: Had error when sending request to add data to rdb in group "
-	    "#%li: %s.", groupId,mstrerror(g_errno));
+	log("net: Had error when sending request to add data to rdb shard "
+	    "#%"UINT32": %s.", shardNum,mstrerror(g_errno));
 
 	returnMulticast ( mcast );
 
@@ -888,13 +984,13 @@ void returnMulticast ( Multicast *mcast ) {
 // just free the request
 void gotReplyWrapper4 ( void *state , void *state2 ) {
 	//logf(LOG_DEBUG,"build: got msg4 reply");
-	long       allocSize = (long)state;
+	int32_t       allocSize = (int32_t)(PTRTYPE)state;
 	Multicast *mcast     = (Multicast *)state2;
 	// get the request we sent
 	char *request     = mcast->m_msg;
-	//long  requestSize = mcast->m_msgSize;
+	//int32_t  requestSize = mcast->m_msgSize;
 	// get the buffer alloc size
-	//long allocSize = requestSize;
+	//int32_t allocSize = requestSize;
 	//if ( allocSize < MAXHOSTBUFSIZE ) allocSize = MAXHOSTBUFSIZE;
 	if ( request ) mfree ( request , allocSize , "Msg4" );
 	// make sure no one else can free it!
@@ -906,7 +1002,7 @@ void gotReplyWrapper4 ( void *state , void *state2 ) {
 
 	returnMulticast ( mcast );
 
-	storeLineWaiters ( );
+	storeLineWaiters ( ); // try to launch more msg4 requests in waiting
 
 	//
 	// now if all buffers are empty, let any flush request know that
@@ -915,12 +1011,12 @@ void gotReplyWrapper4 ( void *state , void *state2 ) {
 	// bail if no callbacks to call
 	if ( s_numCallbacks == 0 ) return;
 
-	//log("msg4: got msg4 reply. replyslot starttime=%lli slot=0x%lx",
-	//    replyingSlot->m_startTime,(long)replyingSlot);
+	//log("msg4: got msg4 reply. replyslot starttime=%"INT64" slot=0x%"XINT32"",
+	//    replyingSlot->m_startTime,(int32_t)replyingSlot);
 
 	// get the oldest msg4 slot starttime
 	UdpSlot *slot = g_udpServer.getActiveHead();
-	long long min = 0LL;
+	int64_t min = 0LL;
 	for ( ; slot ; slot = slot->m_next ) {
 		// get its time stamp
 		if ( slot->m_msgType != 0x04 ) continue;
@@ -934,7 +1030,7 @@ void gotReplyWrapper4 ( void *state , void *state2 ) {
 		// be less than our callback's m_timestamp
 		//if ( slot == replyingSlot ) continue;
 		// log it
-		//log("msg4: slot starttime = %lli ",slot->m_startTime);
+		//log("msg4: slot starttime = %"INT64" ",slot->m_startTime);
 		// get it
 		if ( min && slot->m_startTime >= min ) continue;
 		// got a new min
@@ -942,7 +1038,7 @@ void gotReplyWrapper4 ( void *state , void *state2 ) {
 	}
 
 	// log it
-	//log("msg4: slots min = %lli ",min);
+	//log("msg4: slots min = %"INT64" ",min);
 
 	// scan for slots whose callbacks we can call now
 	char *buf = s_callbackBuf.getBufStart();
@@ -954,7 +1050,7 @@ void gotReplyWrapper4 ( void *state , void *state2 ) {
 		// skip if empty
 		if ( ! cb->m_callback ) continue;
 		// debug
-		//log("msg4: cb timestamp = %lli",cb->m_timestamp);
+		//log("msg4: cb timestamp = %"INT64"",cb->m_timestamp);
 		// wait until callback's stored time is <= all msg4
 		// slot's start times, then we can guarantee that all the
 		// msg4s required for this callback have replied.
@@ -990,7 +1086,7 @@ void storeLineWaiters ( ) {
 	// now were we waiting on a multicast to return in order to send
 	// another request?  return if not.
 	if ( ! msg4 ) return;
-	// grab the first Msg4 in line
+	// grab the first Msg4 in line. ret fls if blocked adding more of list.
 	if ( ! msg4->addMetaList2 ( ) ) return;
 	// hey, we were able to store that Msg4's list, remove him
 	s_msg4Head = msg4->m_next;
@@ -999,8 +1095,10 @@ void storeLineWaiters ( ) {
 	// . if his callback was NULL, then was loaded in loadAddsInProgress()
 	// . we no longer do that so callback should never be null now
 	if ( ! msg4->m_callback ) { char *xx=NULL;*xx=0; }
-	// log this now i guess
-	logf(LOG_DEBUG,"msg4: calling callback for msg4=0x%lx",(long)msg4);
+	// log this now i guess. seems to happen a lot if not using threads
+	if ( g_conf.m_useThreads )
+		logf(LOG_DEBUG,"msg4: calling callback for msg4=0x%"PTRFMT"",
+		     (PTRTYPE)msg4);
 	// release it
 	msg4->m_inUse = false;
 	// call his callback
@@ -1011,7 +1109,7 @@ void storeLineWaiters ( ) {
 	goto loop;
 }
 
-
+#include "Process.h"
 
 // . destroys the slot if false is returned
 // . this is registered in Msg4::set() to handle add rdb record msgs
@@ -1020,13 +1118,44 @@ void storeLineWaiters ( ) {
 // . TODO: need we send a reply back on success????
 // . NOTE: Must always call g_udpServer::sendReply or sendErrorReply() so
 //   read/send bufs can be freed
-void handleRequest4 ( UdpSlot *slot , long netnice ) {
+void handleRequest4 ( UdpSlot *slot , int32_t netnice ) {
+
+	// easy var
+	UdpServer *us = &g_udpServer;
+
+	// if we just came up we need to make sure our hosts.conf is in
+	// sync with everyone else before accepting this! it might have
+	// been the case that the sender thinks our hosts.conf is the same
+	// since last time we were up, so it is up to us to check this
+	if ( g_pingServer.m_hostsConfInDisagreement ) {
+		g_errno = EBADHOSTSCONF;
+		us->sendErrorReply ( slot , g_errno );
+		return;
+	}
+
+	// need to be in sync first
+	if ( ! g_pingServer.m_hostsConfInAgreement ) {
+		// . if we do not know the sender's hosts.conf crc, wait 4 it
+		// . this is 0 if not received yet
+		if ( ! slot->m_host->m_pingInfo.m_hostsConfCRC ) {
+			g_errno = EWAITINGTOSYNCHOSTSCONF;
+			us->sendErrorReply ( slot , g_errno );
+			return;
+		}
+		// compare our hosts.conf to sender's otherwise
+		if ( slot->m_host->m_pingInfo.m_hostsConfCRC != 
+		     g_hostdb.getCRC() ) {
+			g_errno = EBADHOSTSCONF;
+			us->sendErrorReply ( slot , g_errno );
+			return;
+		}
+	}
+
+
 	//logf(LOG_DEBUG,"build: handling msg4 request");
 	// extract what we read
 	char *readBuf     = slot->m_readBuf;
-	long  readBufSize = slot->m_readBufSize;
-	// easy var
-	UdpServer *us = &g_udpServer;
+	int32_t  readBufSize = slot->m_readBufSize;
 	// must at least have an rdbId
 	if ( readBufSize < 7 ) {
 		g_errno = EREQUESTTOOSHORT;
@@ -1037,16 +1166,42 @@ void handleRequest4 ( UdpSlot *slot , long netnice ) {
 	//char *pend = readBuf + readBufSize;
 
 	// get total buf used
-	long used = *(long *)readBuf; //p += 4;
+	int32_t used = *(int32_t *)readBuf; //p += 4;
 
 	// sanity check
 	if ( used != readBufSize ) {
-		us->sendErrorReply(slot,ECORRUPTDATA);return;}
+		// if we send back a g_errno then multicast retries forever
+		// so just absorb it!
+		log("msg4: got corrupted request from hostid %"INT32" "
+		    "used=%"INT32" != %"INT32"=readBufSize msg4",
+		    slot->m_host->m_hostId,
+		    used,
+		    readBufSize);
+		us->sendReply_ass ( NULL , 0 , NULL , 0 , slot ) ;
+		//us->sendErrorReply(slot,ECORRUPTDATA);return;}
+		return;
+	}
 
 	bool skipSyncdb = false;
 
 	// skip syncdb if we are just one host!
 	if ( g_hostdb.m_numHosts == 1 ) skipSyncdb = true;
+
+	// if we did not sync our parms up yet with host 0, wait...
+	if ( g_hostdb.m_hostId != 0 && ! g_parms.m_inSyncWithHost0 ) {
+		// limit logging to once per second
+		static int32_t s_lastTime = 0;
+		int32_t now = getTimeLocal();
+		if ( now - s_lastTime >= 1 ) {
+			s_lastTime = now;
+			log("msg4: waiting to sync with "
+			    "host #0 before accepting data");
+		}
+		// tell send to try again int16_tly
+		g_errno = ETRYAGAIN;
+		us->sendErrorReply(slot,g_errno);
+		return; 
+	}
 
 	// OK, just to get the ball rolling let's delay using/debugging
 	// syncdb until after launch in order to move up the launch date.
@@ -1092,11 +1247,11 @@ void handleRequest4 ( UdpSlot *slot , long netnice ) {
 bool addMetaList ( char *p , UdpSlot *slot ) {
 
 	if ( g_conf.m_logDebugSpider )
-		logf(LOG_DEBUG,"syncdb: calling addMetalist zid=%llu",
-		     *(long long *)(p+4));
+		logf(LOG_DEBUG,"syncdb: calling addMetalist zid=%"UINT64"",
+		     *(int64_t *)(p+4));
 
 	// get total buf used
-	long used = *(long *)p;
+	int32_t used = *(int32_t *)p;
 	// the end
 	char *pend = p + used;
 	// skip the used amount
@@ -1113,29 +1268,56 @@ bool addMetaList ( char *p , UdpSlot *slot ) {
 	// extract collnum, rdbId, recSize
 	collnum_t collnum = *(collnum_t *)p; p += sizeof(collnum_t);
 	char      rdbId   = *(char      *)p; p += 1;
-	long      recSize = *(long      *)p; p += 4;
-	// shortcut
+	int32_t      recSize = *(int32_t      *)p; p += 4;
+	// int16_tcut
 	//UdpServer *us = &g_udpServer;
 	// . get the rdb to which it belongs, use Msg0::getRdb()
 	// . do not call this for every rec if we do not have to
 	if ( rdbId != lastRdbId ) {
 		rdb = getRdbFromId ( (char) rdbId );
+		// skip RDBFAKEDB
+		//if ( rdbId == RDB_FAKEDB ) {
+		//	// do special handler process
+		//	processSpecialSignal ( collnum , p );
+		//	// skip the fakedb record
+		//	p += recSize;
+		//	// drop it for now!!
+		//	if ( p < pend ) goto loop;
+		//	// all done
+		//	return true;
+		//}
 		// an uninitialized secondary rdb? it will have a keysize
-		// if 0 if its never been intialized from the repair page
+		// of 0 if its never been intialized from the repair page.
+		// don't core any more, we probably restarted this shard
+		// and it needs to wait for host #0 to syncs its
+		// g_conf.m_repairingEnabled to '1' so it can start its
+		// Repair.cpp repairWrapper() loop and init the secondary
+		// rdbs so "rdb" here won't be NULL any more.
 		if ( rdb && rdb->m_ks <= 0 ) {
-			log("msg4: oops. got an rdbId key for a secondary "
-			    "rdb and not in repair mode! fix xmldoc!");
-			char *xx=NULL;*xx=0;
+			time_t currentTime = getTime();
+			static time_t s_lastTime = 0;
+			if ( currentTime > s_lastTime + 10 ) {
+				s_lastTime = currentTime;
+				log("msg4: oops. got an rdbId key for a "
+				    "secondary "
+				    "rdb and not in repair mode. waiting to "
+				    "be in repair mode.");
+				g_errno = ETRYAGAIN;
+				return false;
+				//char *xx=NULL;*xx=0;
+			}
 		}
 		if ( ! rdb ) {
 			if ( slot ) 
-				log("msg4: rdbId of %li unrecognized from "
-				    "hostip=%s. "
-				    "dropping WHOLE request", (long)rdbId,
+				log("msg4: rdbId of %"INT32" unrecognized "
+				    "from hostip=%s. "
+				    "dropping WHOLE request", (int32_t)rdbId,
 				    iptoa(slot->m_ip));
 			else
-				log("msg4: rdbId of %li unrecognized. "
-				    "dropping WHOLE request", (long)rdbId);
+				log("msg4: rdbId of %"INT32" unrecognized. "
+				    "dropping WHOLE request", (int32_t)rdbId);
+			g_errno = ETRYAGAIN;
+			return false;
 			// drop it for now!!
 			//if ( p < pend ) goto loop;
 			// all done
@@ -1168,9 +1350,14 @@ bool addMetaList ( char *p , UdpSlot *slot ) {
 	// sanity check
 	if ( rdb->getKeySize() == 0 ) {
 		log("seems like a stray /e/repair-addsinprogress.dat file "
-		    "rdbId=%li. not in repair mode. dropping.",(long)rdbId);
+		    "rdbId=%"INT32". waiting to be in repair mode."
+		    ,(int32_t)rdbId);
+		    //not in repair mode. dropping.",(int32_t)rdbId);
+		g_errno = ETRYAGAIN;
+		return false;
 		char *xx=NULL;*xx=0;
 		// drop it for now!!
+		p += recSize;
 		if ( p < pend ) goto loop;
 		// all done
 		return true;
@@ -1190,6 +1377,13 @@ bool addMetaList ( char *p , UdpSlot *slot ) {
 	rdb->readRequestAdd ( recSize );
 	// this returns false and sets g_errno on error
 	bool status =rdb->addList(collnum, &list, MAX_NICENESS );
+
+	// bad coll #? ignore it. common when deleting and resetting
+	// collections using crawlbot. but there are other recs in this
+	// list from different collections, so do not abandon the whole 
+	// meta list!! otherwise we lose data!!
+	if ( g_errno == ENOCOLLREC && !status ) { g_errno = 0; status = true; }
+
 	// do the next record here if there is one
 	if ( status && p < pend ) goto loop;
 
@@ -1200,6 +1394,10 @@ bool addMetaList ( char *p , UdpSlot *slot ) {
 	     g_repairMode > 0       )
 	     //g_repair.m_fullRebuild   )
 		g_errno = ETRYAGAIN;
+	// ignore enocollrec errors since collection can be reset while
+	// spiders are on now.
+	//if ( g_errno == ENOCOLLREC )
+	//	g_errno = 0;
 	// are we done
 	if ( g_errno ) return false;
 	// success
@@ -1236,8 +1434,9 @@ bool saveAddsInProgress ( char *prefix ) {
 	sprintf ( filename , "%s%saddsinprogress.saving", 
 		  g_hostdb.m_dir , prefix );
 
-	long fd = open ( filename, O_RDWR | O_CREAT | O_TRUNC , 
-			 S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH );
+	int32_t fd = open ( filename, O_RDWR | O_CREAT | O_TRUNC ,
+			    getFileCreationFlags() );
+			 // S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH );
 	if ( fd < 0 ) {
 		log ("build: Failed to open %s for writing: %s",
 		     filename,strerror(errno));
@@ -1249,11 +1448,11 @@ bool saveAddsInProgress ( char *prefix ) {
 	// the # of host bufs
 	write ( fd , (char *)&s_numHostBufs , 4 );
 	// serialize each hostbuf
-	for ( long i = 0 ; i < s_numHostBufs ; i++ ) {
+	for ( int32_t i = 0 ; i < s_numHostBufs ; i++ ) {
 		// get the size
-		long used = 0;
+		int32_t used = 0;
 		// if not null, how many bytes are used in it?
-		if ( s_hostBufs[i] ) used = *(long *)s_hostBufs[i];
+		if ( s_hostBufs[i] ) used = *(int32_t *)s_hostBufs[i];
 		// size of the buf
 		write ( fd , (char *)&used , 4 );
 		// skip if none
@@ -1262,6 +1461,12 @@ bool saveAddsInProgress ( char *prefix ) {
 		// 4 bytes is how much of the total buffer is used, including
 		// those 4 bytes.
 		if ( used == 4 ) continue;
+		// test it
+		if ( used <= 4 || used > 300000000 ) {  // > 300MB????
+			log("msg4: saving addsinprogress. bad bucket "
+			    "used size of %"INT32,used);
+			continue;
+		}
 		// the buf itself
 		write ( fd , s_hostBufs[i] , used );
 	}
@@ -1275,12 +1480,26 @@ bool saveAddsInProgress ( char *prefix ) {
 		if ( ! slot->m_callback ) continue;
 		// skip if got reply
 		if ( slot->m_readBuf ) continue;
+		// if not sending something, skip
+		if ( ! slot->m_sendBuf ) continue;
+		// test it
+		int32_t used = *(int32_t *)slot->m_sendBuf;
+		if ( used <= 4 || used > 300000000 ) {  // > 300MB????
+			log("msg4: saving addsinprogress. bad slot "
+			    "used size of %"INT32,used);
+			continue;
+		}
+		if ( used != slot->m_sendBufSize ) {
+			log("msg4: saving addsinprogress. bad used size of "
+			    "%"INT32" != %"INT32,used,slot->m_sendBufSize);
+			continue;
+		}
 		// write hostid sent to
 		write ( fd , &slot->m_hostId , 4 );
 		// write that
 		write ( fd , &slot->m_sendBufSize , 4 );
 		// then the buf data itself
-		write ( fd , &slot->m_sendBuf , slot->m_sendBufSize );
+		write ( fd , slot->m_sendBuf , slot->m_sendBufSize );
 	}
 	
 
@@ -1312,18 +1531,21 @@ bool saveAddsInProgress ( char *prefix ) {
 		  g_hostdb.m_dir , prefix );
 
 	::rename ( filename , newFilename );
+
+	log(LOG_INFO,"build: Renamed %s to %s",filename,newFilename);
+
 	return true;
 }
 
 /*
 bool Msg4::save ( int fd ) {
-	short  collLen  = gbstrlen(m_coll);
+	int16_t  collLen  = gbstrlen(m_coll);
 	// collLen
 	write ( fd , &collLen , 2 );
 	// coll, as a string in case coll is deleted and another added
 	write ( fd , coll , collLen + 1 );
 	// offset
-	long offset = m_currentPtr - m_metaList;
+	int32_t offset = m_currentPtr - m_metaList;
 	// might as well avoid re-adds
 	write ( fd , (char *)&offset , 4 );
 	// list size (4 bytes)
@@ -1359,10 +1581,10 @@ bool loadAddsInProgress ( char *prefix ) {
 	if ( status != 0 && errno == ENOENT ) return true;
 
 	// get the fileSize into "pend"
-	long p    = 0;
-	long pend = stats.st_size;
+	int32_t p    = 0;
+	int32_t pend = stats.st_size;
 
-	long fd = open ( filename, O_RDONLY );
+	int32_t fd = open ( filename, O_RDONLY );
 	if ( fd < 0 ) {
 		log ("build: Failed to open %s for reading: %s",
 		     filename,strerror(errno));
@@ -1370,25 +1592,25 @@ bool loadAddsInProgress ( char *prefix ) {
 		return false;
 	}
 
-	log(LOG_INFO,"build: Loading %li bytes from %s",pend,filename);
+	log(LOG_INFO,"build: Loading %"INT32" bytes from %s",pend,filename);
 
 	// . deserialize each hostbuf
 	// . the # of host bufs
-	long numHostBufs;
+	int32_t numHostBufs;
 	read ( fd , (char *)&numHostBufs , 4 ); 
 	p += 4;
 	if ( numHostBufs != s_numHostBufs ) {
 		g_errno = EBADENGINEER;
-		return log("build: addsinprogress.dat has wrong number of "
-			   "host bufs.");
+		log("build: addsinprogress.dat has wrong number of "
+		    "host bufs.");
 	}
 
 	// deserialize each hostbuf
-	for ( long i = 0 ; i < s_numHostBufs ; i++ ) {
+	for ( int32_t i = 0 ; i < numHostBufs ; i++ ) {
 		// break if nothing left to read
 		if ( p >= pend ) break;
 		// USED size of the buf
-		long used;
+		int32_t used;
 		read ( fd , (char *)&used , 4 );
 		p += 4;
 		// if used is 0, a NULL buffer, try to read the next one
@@ -1397,19 +1619,22 @@ bool loadAddsInProgress ( char *prefix ) {
 			s_hostBufSizes[i] = 0;
 			continue;
 		}
+		if ( used < 4 || used > 300000000 )
+			return log("msg4: bad used bytes in bucket 1");
 		// malloc the min buf size
-		long allocSize = MAXHOSTBUFSIZE;
+		int32_t allocSize = MAXHOSTBUFSIZE;
 		if ( allocSize < used ) allocSize = used;
 		// alloc the buf space, returns NULL and sets g_errno on error
 		char *buf = (char *)mmalloc ( allocSize , "Msg4" );
-		if ( ! buf ) return log("build: Could not alloc %li bytes for "
+		if ( ! buf ) return log("build: Could not alloc %"INT32" bytes for "
 					"reading %s",allocSize,filename);
 		// the buf itself
-		long nb = read ( fd , buf , used );
+		int32_t nb = read ( fd , buf , used );
 		// sanity
 		if ( nb != used ) {
 			// reset the buffer usage
-			*(long *)(p-4) = 4;
+			//*(int32_t *)(p-4) = 4;
+			*(int32_t *)buf = 4;
 			// return false
 			return log("build: error reading addsinprogress.dat: "
 				   "%s", mstrerror(errno));
@@ -1417,10 +1642,16 @@ bool loadAddsInProgress ( char *prefix ) {
 		// skip over it
 		p += used;
 		// sanity check
-		if ( *(long *)buf != used ) {
+		if ( *(int32_t *)buf != used ) {
 			log("build: file %s is bad.",filename);
 			char *xx = NULL; *xx = 0; 
 		}
+		if ( i >= s_numHostBufs ) {
+			mfree ( buf , allocSize ,"hostbuf");
+			log("build: skipping host buf #%"INT32,i);
+			continue;
+		}
+
 		// set the array
 		s_hostBufs     [i] = buf;
 		s_hostBufSizes [i] = allocSize;
@@ -1431,24 +1662,38 @@ bool loadAddsInProgress ( char *prefix ) {
 		// break if nothing left to read
 		if ( p >= pend ) break;
 		// hostid sent to
-		long hostId;
+		int32_t hostId;
 		read ( fd , (char *)&hostId , 4 );
 		p += 4;
 		// get host
 		Host *h = g_hostdb.getHost(hostId);
-		// must be there
-		if ( ! h ) return log("build: bad msg4 hostid %li",hostId);
 		// host many bytes
-		long numBytes;
+		int32_t numBytes;
 		read ( fd , (char *)&numBytes , 4 );
 		p += 4;
+		if ( numBytes < 4 || numBytes > 300000000 )
+			return log("msg4: bad used bytes in slot 1");
 		// allocate buffer
 		char *buf = (char *)mmalloc ( numBytes , "msg4loadbuf");
-		if ( ! buf ) return log("build: could not alloc msg4 buf");
+		if ( ! buf ) {
+			close ( fd );
+			return log("build: could not alloc msg4 buf");
+		}
 		// the buffer
-		long nb = read ( fd , buf , numBytes );
-		if ( nb != numBytes ) return log("build: bad msg4 buf read");
+		int32_t nb = read ( fd , buf , numBytes );
+		if ( nb != numBytes ) {
+			close ( fd );
+			return log("build: bad msg4 buf read");
+		}
 		p += numBytes;
+		// must be there
+		if ( ! h ) {
+			//close (fd);
+			log("build: bad msg4 hostid %"INT32" nb=%"INT32,
+			    hostId,nb);
+			mfree ( buf , numBytes,"hostbuf");
+			continue;
+		}
 		// send it!
 		if ( ! g_udpServer.sendRequest ( buf ,
 						 numBytes ,
@@ -1460,6 +1705,7 @@ bool loadAddsInProgress ( char *prefix ) {
 						 NULL         , // state data
 						 NULL , // callback
 						 999999999)){// seconds timeout
+			close ( fd );
 			// report it
 			return log("build: could not resend reload buf: %s",
 				   mstrerror(g_errno));
@@ -1496,10 +1742,10 @@ bool loadAddsInProgress ( char *prefix ) {
 		mnew ( msg4 , sizeof(Msg4) , "Msg4c");
 
 		char  rdbId    ;
-		short collLen  ;
+		int16_t collLen  ;
 		char  coll[MAX_COLL_LEN+1];
-		long  listOff  ;
-		long  listSize ;
+		int32_t  listOff  ;
+		int32_t  listSize ;
 		bool  err = false;
 
 		// read in rdbid, collLen, coll, listSize, listOffset, listData
@@ -1539,7 +1785,7 @@ bool loadAddsInProgress ( char *prefix ) {
 
 		// if had a bad rdbId, try reading the next queue
 		if ( ! rdb ) {
-			log("build: had bogus rdbId of %li.",(long)rdbId);
+			log("build: had bogus rdbId of %"INT32".",(int32_t)rdbId);
 			mfree   ( listBuf , listSize , "Msg4d" );
 			mdelete ( msg4 , sizeof(Msg4), "Msg4" );
 			delete  ( msg4 );
@@ -1578,3 +1824,65 @@ bool loadAddsInProgress ( char *prefix ) {
 	close ( fd );
 	return true;
 }
+
+
+//
+// right now the FAKEDB record is a signal to remove the spider lock
+// from the lock table because we are done spidering it.
+//
+/*
+void processSpecialSignal ( collnum_t collnum , char *p ) {
+
+	key_t *fake = (key_t *)p;
+
+	// use a uh48 of 0 to signify an unlock operation
+	//g_titledb.getUrlHash48 ( (key_t *)key ) == 0LL ) {
+	// must be 96 bits
+	//if ( m_ks != 12 ) { char *xx=NULL;*xx=0; }
+	// get docid that was locked
+	//int64_t d = g_titledb.getDocId ( (key_t *)key);
+	int64_t d = fake->n0;
+	// . make it the first probable, that is the lock key
+	// . we do that so if we are locking a new url that
+	//   is not yet indexed, its probable docid may collide
+	//   and be incremented, so we do not know what its
+	//   actual docid will end up being...
+	int64_t lockKey = g_titledb.getFirstProbableDocId(d);
+	// log debug msg
+	if ( g_conf.m_logDebugSpider)
+		// log debug
+		logf(LOG_DEBUG,"msg4: got FAKE titledb "
+		     "key for lockkey=%"UINT64" - removing spider lock",
+		     lockKey);
+	// int16_tcut
+	HashTableX *ht = &g_spiderLoop.m_lockTable;
+	UrlLock *lock = (UrlLock *)ht->getValue ( &lockKey );
+	time_t nowGlobal = getTimeGlobal();
+
+	if ( g_conf.m_logDebugSpiderFlow )
+		logf(LOG_DEBUG,"spflow: scheduled lock removal in 5 secs for "
+		     "docid=lockkey=%"UINT64"",  lockKey);
+
+	// test it
+	//if ( m_nowGlobal == 0 && lock )
+	//	m_nowGlobal = getTimeGlobal();
+	// we do it this way rather than remove it ourselves
+	// because a lock request for this guy
+	// might be currently outstanding, and it will end up
+	// being granted the lock even though we have by now removed
+	// it from doledb, because it read doledb before we removed 
+	// it! so wait 5 seconds for the doledb negative key to 
+	// be absorbed to prevent a url we just spidered from being
+	// re-spidered right away because of this sync issue.
+	if ( lock ) lock->m_expires = nowGlobal + 5;
+	// bitch if not in there
+	if (!lock&&g_conf.m_logDebugSpider)//ht->isInTable(&lockKey)) 
+		logf(LOG_DEBUG,"spider: rdb: lockkey %"UINT64" "
+		     "was not in lock table",lockKey);
+	// now unlock on that
+	//g_spiderLoop.m_lockTable.removeKey(&lockKey);
+	// do not actually add this fake key to titledb!
+	//return true;
+}
+*/
+

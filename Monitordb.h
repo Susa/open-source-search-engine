@@ -15,22 +15,22 @@
 #define MONITORDBKS sizeof(key96_t)
 
 #include "Rdb.h"
-#include "DiskPageCache.h"
+//#include "DiskPageCache.h"
 
 class Monitordb {
  public:
 	void reset();
 
 	bool init    ( );
-	bool init2 ( long treeMem );
+	bool init2 ( int32_t treeMem );
 	bool verify  ( char *coll );
 	bool addColl ( char *coll, bool doVerify = true );
 
 
 	Rdb           *getRdb()           { return &m_rdb; };
 
-	DiskPageCache *getDiskPageMonitor () { return &m_pc; };
-	DiskPageCache m_pc;
+	//DiskPageCache *getDiskPageMonitor () { return &m_pc; };
+	//DiskPageCache m_pc;
 
  private:
 	Rdb           m_rdb;

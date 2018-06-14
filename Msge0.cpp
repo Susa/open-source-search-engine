@@ -20,7 +20,7 @@ Msge0::~Msge0() {
 
 void Msge0::reset() {
 	m_errno = 0;
-	for ( long i = 0 ; i < m_n ; i++ ) {
+	for ( int32_t i = 0 ; i < m_n ; i++ ) {
 		// cast it
 		TagRec *tr = m_tagRecPtrs[i];
 		// skip if empty
@@ -30,7 +30,7 @@ void Msge0::reset() {
 		// free the rdblist memory in the TagRec::m_list
 		m_tagRecPtrs[i]->reset();
 	}
-	for ( long i = 0 ; i <= m_slabNum ; i++ )
+	for ( int32_t i = 0 ; i <= m_slabNum ; i++ )
 		mfree ( m_slab[i] , SLAB_SIZE , "msgeslab" );
 	m_slabNum = -1;
 	m_slabPtr = NULL;
@@ -47,12 +47,12 @@ void Msge0::reset() {
 // . you can pass in a list of docIds rather than urlPtrs
 bool Msge0::getTagRecs ( char        **urlPtrs           ,
 			 linkflags_t  *urlFlags          , //Links::m_linkFlags
-			 long          numUrls           ,
+			 int32_t          numUrls           ,
 			// if skipOldLinks && urlFlags[i]&LF_OLDLINK, skip it
 			 bool          skipOldLinks      ,
 			 TagRec       *baseTagRec        ,
-			 char         *coll              ,
-			 long          niceness          ,
+			 collnum_t     collnum,
+			 int32_t          niceness          ,
 			 void         *state             ,
 			 void        (*callback)(void *state) ) {
 	reset();
@@ -65,17 +65,17 @@ bool Msge0::getTagRecs ( char        **urlPtrs           ,
 	m_numUrls          = numUrls;
 	m_skipOldLinks     = skipOldLinks;
 	m_baseTagRec       = baseTagRec;
-	m_coll             = coll;
+	m_collnum          = collnum;
 	m_niceness         = niceness;
 	m_state            = state;
 	m_callback         = callback;
 
 	// . how much mem to alloc?
 	// . include an extra 4 bytes for each one to hold possible errno
-	long need = 
+	int32_t need = 
 		4 + // error
-		4 + // tag ptr
-		4 ; // slab ptr
+		sizeof(TagRec *) + // tag ptr
+		sizeof(char *) ; // slab ptr
 	// one per url
 	need *= numUrls;
 	// allocate the buffer to hold all the info we gather
@@ -86,9 +86,9 @@ bool Msge0::getTagRecs ( char        **urlPtrs           ,
 	memset ( m_buf , 0 , m_bufSize );
 	// set the ptrs!
 	char *p = m_buf;
-	m_tagRecErrors      = (long    *)p ; p += numUrls * 4;
-	m_tagRecPtrs        = (TagRec **)p ; p += numUrls * 4;
-	m_slab              = (char   **)p ; p += numUrls * 4;
+	m_tagRecErrors      = (int32_t    *)p ; p += numUrls * 4;
+	m_tagRecPtrs        = (TagRec **)p ; p += numUrls * sizeof(TagRec *);
+	m_slab              = (char   **)p ; p += numUrls * sizeof(char *);
 	// initialize
 	m_numRequests = 0;
 	m_numReplies  = 0;
@@ -112,14 +112,20 @@ bool Msge0::getTagRecs ( char        **urlPtrs           ,
 
 // we only come back up here 1) in the very beginning or 2) when a url 
 // completes its pipeline of requests
-bool Msge0::launchRequests ( long starti ) {
+bool Msge0::launchRequests ( int32_t starti ) {
 	// reset any error code
 	g_errno = 0;
  loop:
 	// stop if no more urls. return true if we got all replies! no block.
 	if ( m_n >= m_numUrls ) return (m_numRequests == m_numReplies);
+	// if all hosts are getting a diffbot reply with 50 spiders and they
+	// all timeout at the same time we can very easily clog up the
+	// udp sockets, so use this to limit... i've seen the whole
+	// spider tables stuck with "getting outlink tag rec vector"statuses
+	int32_t maxOut = MAX_OUTSTANDING_MSGE0;
+	if ( g_udpServer.m_numUsedSlots > 500 ) maxOut = 1;
 	// if we are maxed out, we basically blocked!
-	if (m_numRequests - m_numReplies >= MAX_OUTSTANDING_MSGE0)return false;
+	if (m_numRequests - m_numReplies >= maxOut ) return false;
 	// . skip if "old"
 	// . we are not planning on adding this to spiderdb, so Msg16
 	//   want to skip the ip lookup, etc.
@@ -141,11 +147,12 @@ bool Msge0::launchRequests ( long starti ) {
 	// . if m_xd is set, create the url from the ad id
 	char *p = m_urlPtrs[m_n];
 	// get the length
-	long  plen = gbstrlen(p);
+	int32_t  plen = gbstrlen(p);
 	// . grab a slot
 	// . m_msg8as[i], m_msgCs[i], m_msg50s[i], m_msg20s[i]
-	long i;
-	for ( i = starti ; i < MAX_OUTSTANDING_MSGE0 ; i++ )
+	int32_t i;
+	// make this 0 since "maxOut" now changes!!
+	for ( i = 0 /*starti*/ ; i < MAX_OUTSTANDING_MSGE0 ; i++ )
 		if ( ! m_used[i] ) break;
 	// sanity check
 	if ( i >= MAX_OUTSTANDING_MSGE0 ) { char *xx = NULL; *xx = 0; }
@@ -174,7 +181,7 @@ bool Msge0::launchRequests ( long starti ) {
 	goto loop;
 }
 
-bool Msge0::sendMsg8a ( long i ) {
+bool Msge0::sendMsg8a ( int32_t i ) {
 	// handle errors
 	if ( g_errno && ! m_errno ) m_errno = g_errno;
 	g_errno = 0;
@@ -182,10 +189,10 @@ bool Msge0::sendMsg8a ( long i ) {
 	//TagRec *m = &m_tagRecs[i];
 	// save state into Msg8a
 	m->m_state2 =  this;
-	m->m_state3 = (void *)i;
+	m->m_state3 = (void *)(PTRTYPE)i;
 
 	// how big are all the tags we got for this url
-	long need = sizeof(TagRec);
+	int32_t need = sizeof(TagRec);
 	// sanity check
 	if ( need > SLAB_SIZE ) { char *xx=NULL;*xx=0; }
 	// how much space left in the latest buffer
@@ -216,7 +223,7 @@ bool Msge0::sendMsg8a ( long i ) {
 		m_slabEnd = m_slabPtr + SLAB_SIZE;
 	}
 	// we are processing the nth url
-	long n = m_ns[i];
+	int32_t n = m_ns[i];
 	// now use it
 	m_tagRecPtrs[n] = (TagRec *)m_slabPtr;
 	// constructor
@@ -233,7 +240,7 @@ bool Msge0::sendMsg8a ( long i ) {
 	//   subsite.
 	if ( ! m->getTagRec ( &m_urls[i]    ,
 			      NULL, // sites[i] ,
-			      m_coll        ,
+			      m_collnum        ,
 			      // if domain is banned, we will miss that here!
 			      true          , // skip domain lookup?
 			      m_niceness    ,
@@ -248,7 +255,7 @@ void gotTagRecWrapper ( void *state ) {
 	Msg8a *m     = (Msg8a *)state;
 	//TagRec *m    = (TagRec *)state;
 	Msge0  *THIS = (Msge0  *)m->m_state2;
-	long    i    = (long   )m->m_state3;
+	int32_t    i    = (int32_t   )(PTRTYPE)m->m_state3;
 	if ( ! THIS->doneSending ( i ) ) return;
 	// try to launch more, returns false if not done
 	if ( ! THIS->launchRequests(i) ) return;
@@ -256,9 +263,9 @@ void gotTagRecWrapper ( void *state ) {
 	THIS->m_callback ( THIS->m_state );
 }
 
-bool Msge0::doneSending ( long i ) {
+bool Msge0::doneSending ( int32_t i ) {
 	// we are processing the nth url
-	long   n    = m_ns[i];
+	int32_t   n    = m_ns[i];
 	// save the error if msg8a had one
 	m_tagRecErrors[n] = g_errno;
 	// also, set m_errno for this Msge0 class...
@@ -274,7 +281,7 @@ bool Msge0::doneSending ( long i ) {
 	// tally it up
 	m_numReplies++;
 	//if ( m_getSiteRecs ) ruleset = m_siteRecBuf[n].m_filenum;
-	//log ( LOG_DEBUG, "build: Finished Msge0 for url [%li,%li]: %s",
+	//log ( LOG_DEBUG, "build: Finished Msge0 for url [%"INT32",%"INT32"]: %s",
 	//      n, i, m_urls[i].getUrl() );
 	// free it
 	m_used[i] = false;

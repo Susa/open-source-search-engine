@@ -13,20 +13,20 @@ void Cachedb::reset() {
 
 bool Cachedb::init ( ) {
 	// we use the same disk page size as indexdb (for rdbmap.cpp)
-	long pageSize = GB_INDEXDB_PAGE_SIZE;
+	//int32_t pageSize = GB_INDEXDB_PAGE_SIZE;
 	// set this for debugging
-	//long long maxTreeMem = 1000000;
+	//int64_t maxTreeMem = 1000000;
 	// i've seen some debug entries like 33MB because of
 	// m_debugDocIdScoreBuf and m_origDocIdScoreBuf take up so much space!
 	// so don't cache those any more!!
-	long long maxTreeMem = 40000000; // 40MB g_serpdb, 40MB g_cachedb
+	int64_t maxTreeMem = 40000000; // 40MB g_serpdb, 40MB g_cachedb
 	// . what's max # of tree nodes?
 	// . key+4+left+right+parents+dataPtr = sizeof(key96_t)+4 +4+4+4+4
 	// . 32 bytes per record when in the tree
 	// . >1000 bytes of data per rec
-	long maxTreeNodes = maxTreeMem /(sizeof(key96_t)+16+1000);
+	int32_t maxTreeNodes = maxTreeMem /(sizeof(key96_t)+16+1000);
 	// disk page cache mem, 100MB on gk0 now
-	long pcmem = 0; // g_conf.m_cachedbMaxDiskPageCacheMem;
+	//int32_t pcmem = 0; // g_conf.m_cachedbMaxDiskPageCacheMem;
 	// keep this low if we are the tmp cluster
 	//if ( g_hostdb.m_useTmpCluster ) pcmem = 0;
 	// TODO: would be nice to just do page caching on the satellite files;
@@ -38,15 +38,13 @@ bool Cachedb::init ( ) {
 		m_rdbId = RDB_SERPDB;
 	}
 
-	if ( ! m_pc.init ( m_name ,
-			   m_rdbId, // RDB_CACHEDB,
-			   pcmem    ,
-			   pageSize ,
-			   true     ,  // use shared mem?
-			   false    )) // minimizeDiskSeeks?
-		return log("db: %s init failed.",m_name);
+	// if ( ! m_pc.init ( m_name ,
+	// 		   m_rdbId, // RDB_CACHEDB,
+	// 		   pcmem    ,
+	// 		   pageSize ))
+	// 	return log("db: %s init failed.",m_name);
 	// init the rdb
-	return m_rdb.init ( g_hostdb.m_dir ,
+	if ( ! m_rdb.init ( g_hostdb.m_dir ,
 			    m_name ,
 			    true     , // dedup
 			    -1        , // fixeddatasize is 0 since no data
@@ -62,14 +60,18 @@ bool Cachedb::init ( ) {
 			    0        , // cache nodes
 			    false, // true     , // use half keys
 			    false    , // load cache from disk
-			    &m_pc    ,
+			    NULL,//&m_pc    ,
 			    false    , // false
 			    false    , // preload page cache
 			    sizeof(key96_t) ,
 			    true             , // bias page cache? (true!)
-			    true ); // is collectionless???? !!!!
-}
+			    true )) // is collectionless???? !!!!
+		return false;
 
+	// add the base since it is a collectionless rdb
+	return m_rdb.addRdbBase1 ( NULL );
+}
+/*
 bool Cachedb::addColl ( char *coll, bool doVerify ) {
 	if ( ! m_rdb.addColl ( coll ) ) return false;
 	if ( ! doVerify ) return true;
@@ -81,9 +83,10 @@ bool Cachedb::addColl ( char *coll, bool doVerify ) {
 	log ( "db: Verify failed, but scaling is allowed, passing." );
 	return true;
 }
-
+*/
 bool Cachedb::verify ( char *coll ) {
-	log ( LOG_INFO, "db: Verifying %s for coll %s...", coll,m_name );
+	// coll is NULL here methinks
+	log ( LOG_DEBUG, "db: Verifying %s...",m_name );
 	g_threads.disableThreads();
 
 	Msg5 msg5;
@@ -93,10 +96,11 @@ bool Cachedb::verify ( char *coll ) {
 	key224_t endKey;
 	startKey.setMin();
 	endKey.setMax();
-	long minRecSizes = 64000;
-	
+	int32_t minRecSizes = 64000;
+	CollectionRec *cr = g_collectiondb.getRec(coll);
+
 	if ( ! msg5.getList ( m_rdbId,//RDB_CACHEDB   ,
-			      coll          ,
+			      cr->m_collnum ,
 			      &list         ,
 			      (char*)&startKey      ,
 			      (char*)&endKey        ,
@@ -121,19 +125,19 @@ bool Cachedb::verify ( char *coll ) {
 		return log("db: HEY! it did not block");
 	}
 
-	long count = 0;
-	long got   = 0;
+	int32_t count = 0;
+	int32_t got   = 0;
 	for ( list.resetListPtr() ; ! list.isExhausted() ;
 	      list.skipCurrentRecord() ) {
 		key224_t k;
 		list.getCurrentKey((char*)&k);
 		count++;
-		uint32_t groupId = getGroupId ( m_rdbId , &k );//RDB_CACHEDB
-		if ( groupId == g_hostdb.m_groupId ) got++;
+		uint32_t shardNum = getShardNum ( m_rdbId , &k );//RDB_CACHEDB
+		if ( shardNum == getMyShardNum() ) got++;
 	}
 	if ( got != count ) {
-		log ("db: Out of first %li records in %s , "
-		     "only %li belong to our group.",count,m_name,got);
+		log ("db: Out of first %"INT32" records in %s , "
+		     "only %"INT32" belong to our group.",count,m_name,got);
 
 		/*
 		// repeat with log
@@ -142,13 +146,13 @@ bool Cachedb::verify ( char *coll ) {
 
 			key224_t k;
 			list.getCurrentKey((char*)&k);
-			uint32_t groupId = getGroupId ( RDB_CACHEDB , &k );
-			long groupNum = g_hostdb.getGroupNum(groupId);
-			unsigned long sh32 ;
+			uint32_t shardNum = getShardNum ( RDB_CACHEDB , &k );
+			int32_t groupNum = g_hostdb.getGroupNum(groupId);
+			uint32_t sh32 ;
 			sh32 = g_cachedb.getLinkeeSiteHash32_uk(&k);
 			uint16_t sh16 = sh32 >> 19;
-			log("db: sh16=0x%lx group=%li",
-			    (long)sh16,groupNum);
+			log("db: sh16=0x%"XINT32" group=%"INT32"",
+			    (int32_t)sh16,groupNum);
 		}
 		*/
 
@@ -162,8 +166,8 @@ bool Cachedb::verify ( char *coll ) {
 		g_threads.enableThreads();
 		return g_conf.m_bypassValidation;
 	}
-	log ( LOG_INFO, "db: %s passed verification successfully for "
-	      "%li recs.", m_name,count );
+	log ( LOG_DEBUG, "db: %s passed verification successfully for "
+	      "%"INT32" recs.", m_name,count );
 	// DONE
 	g_threads.enableThreads();
 	return true;

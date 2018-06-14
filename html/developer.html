@@ -1,28 +1,15 @@
-<html> 
-<head>
-<title>Gigablast Engineering Overview</title>
-<style>
-pre {
-/*	width: 100%; */
-	background: #f8f8f8;
-	padding: 10px 5px;
-}
-</style>
-</head>
-<body text=#000000 bgcolor=#ffffff link=#000000 vlink=#000000 alink=#000000><style><!--body,td,a,p,.h{font-family:arial,sans-serif; font-size: 15px;}//--></style>
 
-<center>
-
-<img border=0 width=500 height=122 src=http://www.gigablast.com/logo-med.jpg>
 <br><br>
-</center>
 
-<h1>Gigablast Developer Documentation</h1>
+<h1>Developer Documentation</h1>
 
-Administration documentation is <a href=/admin.html>here</a>.
+FAQ is <a href=/admin.html>here</a>.
 <br><br>
 
 A work-in-progress <a href=/compare.html>comparison to SOLR</a>.
+<br><br>
+
+<b>CAUTION: This documentation is old and a lot of it is out of date. -- Matt, May 2014</b>
 <br><br>
 
 <!--- TABLE OF CONTENTS-->
@@ -607,8 +594,8 @@ key is 12 bytes and of type key_t, as defined in the types.h file.
 <tr><td>Msg0</td><td>DB</td><td>Fetches an RdbList from across the network.</td></tr>
 <tr><td>Msg1</td><td>DB</td><td>Adds all the records in an RdbList to various hosts in the network.</td></tr>
 <tr><td>Msg3</td><td>DB</td><td>Reads an RdbList from several consecutive files in a particular Rdb.</td></tr>
-<tr><td>Msg34</td><td>DB</td><td>Determines least loaded host in a group of hosts.</td></tr>
-<tr><td>Msg35</td><td>DB</td><td>Merge token managament functions. Currently does not work.</td></tr>
+<!--<tr><td>Msg34</td><td>DB</td><td>Determines least loaded host in a group (shard) of hosts.</td></tr>
+<tr><td>Msg35</td><td>DB</td><td>Merge token managament functions. Currently does not work.</td></tr>-->
 <tr><td>Msg5</td><td>DB</td><td>Uses Msg3 to read RdbLists from multiple files and then merges those lists into a single RdbList. Does corruption detection and repiar. Intergrates list from RdbTree into the single RdbList.</td></tr>
 <tr><td>MsgB</td><td>DB</td><td>Unused. A distributed cache for caching anything.</td></tr>
 <tr><td>Rdb</td><td>DB</td><td>The core database class from which all are derived.</td></tr>
@@ -1023,7 +1010,7 @@ If reindexing an old url, we do not re-add the urldb record with a tfn of 255 be
 <br><br>
 When merging urldb lists in RdbList::indexMerge_r() we ignore the tfn bits. That allows the tfns of newer urldb recs to override those of older urldb recs. The tfns are really not meant to be part of the key, they are just data that we never need to sort by, but we cram them into the key to save space.
 <br><br>
-We try to keep all of the Urldb records in memory. Not necessarily in the RdbTree, but in a disk page cache. Therefore, try to keep urldbMaxDiskPageCacheMem bigenough to hold the entire Urldb in memory. This speeds up things a good bit. Urldb also takes heavy advantage of using half keys for compression, as described above under Indexdb. Urldb's disk page cache is also biased, that is, lower docids are looked up on one host, and higher docids are looked up on that host's twin. This split, or biases, the cache making it twice as effective. If more than two hosts are in a group, then it will split the cache across all of them equally. This logic is in Msg22.cpp. (search for "bias" in that file).
+We try to keep all of the Urldb records in memory. Not necessarily in the RdbTree, but in a disk page cache. Therefore, try to keep urldbMaxDiskPageCacheMem bigenough to hold the entire Urldb in memory. This speeds up things a good bit. Urldb also takes heavy advantage of using half keys for compression, as described above under Indexdb. Urldb's disk page cache is also biased, that is, lower docids are looked up on one host, and higher docids are looked up on that host's twin. This split, or biases, the cache making it twice as effective. If more than two hosts are in a group (shard), then it will split the cache across all of them equally. This logic is in Msg22.cpp. (search for "bias" in that file).
 <br><br>
 Everytime Titledb files are merged, the affected docids must be updated in 
 Urldb, but because Urldb is so much smaller than Titledb, it does not inhibit
@@ -1173,7 +1160,7 @@ The network code consists of 5 parts:
 <tr><td>HttpMime</td><td>Net</td><td>Creates and parses an HTTP MIME header.</td></tr>
 <tr><td>HttpRequest</td><td>Net</td><td>Creates and parses an HTTP request.</td></tr>
 <tr><td>HttpServer</td><td>Net</td><td>Gigablast's highly efficient web server, contains a TcpServer class.</td></tr>
-<tr><td>Multicast</td><td>Net</td><td>Used to reroute a request if it fails to be answered in time. Also used to send a request to multiple hosts in the cluster, usually to a group for data storage purposes.</td></tr>
+<tr><td>Multicast</td><td>Net</td><td>Used to reroute a request if it fails to be answered in time. Also used to send a request to multiple hosts in the cluster, usually to a group (shard) for data storage purposes.</td></tr>
 <tr><td>TcpServer</td><td>Net</td><td>A TCP server which contains an array of TcpSockets.</td></tr>
 <tr><td>TcpSockets</td><td>Net</td><td>A C++ wrapper for a TCP socket.</td></tr><tr><td>UdpServer</td><td>Net</td><td>A reliable UDP server that uses non-blocking sockets and calls handlers  recieving a message. The handle called depends on that message's type. The handler is UdpServer::m_handlers[msgType].</td></tr>
 <tr><td>UdpSlot</td><td>Net</td><td>Basically a "socket" for the UdpServer. The UdpServer contains an array of a few thousand of these. When none are available to conduct receive a request, the dgram is dropped and will later be resent by the requester in a back-off fashion.</td></tr>
@@ -1749,35 +1736,29 @@ to compute the similarity of two Gigabit Vectors.
 <br><br>
 
 <a name="deduping"></a>
-<h2>Deduping</h2>
-Msg16 calls g_checksumdb::makeDedupKey() to set Msg16::m_dupKey from the hash
-of the content of the document. That hash is computed by
-g_checksumdb.getContentHash() which takes the content as input. Basically,
-it is a direct hash, but tags are ignored, unless they are frame or iframe
-tags and the pure text is hashed as lower cases alnum so that punctuation
-and spaces are ignored. This key is then added to checksumdb if and only if
-it is different than what the old TitleRec contained, if any. If incremental
-indexing is disabled, then the key is always added to checksumdb.
+<h2>Deduping at Spider Time</h2>
+<i>Last Updated 1/29/2014 by MDW</i>
 <br><br>
-<a name="msg19"></a>
-Before indexing the document, though, Msg16 will call Msg19 to see if the
-url is a dup of another from the same hostname. If it is then the index will
-fail with EDOCDUP.
+Many URLs contain essentially the same content as other URLs. Therefore we need to dedup URLs and prevent them from entering the index. Deduping in this fashion is disabled by default so you will need to enabled it in the Spider Controls for your collection. You will note such duplicate urls in the logs with the "Doc is a dup" (<a href=#indexcodes>EDOCDUP</a>) message. Those urls are not indexed, and if they were indexed, they will be removed.
 <br><br>
-<a name="loosechecksum"></a>
-As of 2006, Gigablast can support <i>loose checksums</i>, which exclude what
-Gigablast deems to be menu text when computing the hash. This hash is computed
-by XmlDoc::set1() by just XORing all of the word hashes in the doucment 
-together, provided they are not a part of a menu, and therefore should have
-positive scores. To implement loose checksums you must have 
-<i>useLooseChecksums</i> set to true in the ruleset.
+When a page is indexed we store a hash of its content into a single "posdb" key.
+We set the "sharded by termid" bit for that posdb key, so it is not sharded by docid which is the norm. Hostdb::getShard() checks for that bit and shards by termid when it is present. In that way all the pages with the same content hash will be together on disk in posdb.
+<br><br>
+We perform a lookup of all other docids that share the same content hash as the document we are indexing. If another docid has the same content hash and its site rank is the same as ours or higher, then we are a duplicate docid and we do not index our docid and getIndexCode() returns <a href=#indexcode>EDOCDUP</a>. Our document will be deleted if it was indexed. If another docid with the same content hash as us has a siterank lower than ours, then he is the dup and he will be removed when he is reindexed the next time with the <a href=#indexcode>EDOCDUP</a> error. If another docid with the same content hash as us as the SAME site rank as us, then we assume we are the dup. We go first come first server approach in that scenario, site rank trumps.
+<br><br>
+We use the getContentHashExact64() function to generate the 64-bit dup checksum. It hashes the document pretty much verbatim for safety. It does treat sequences of white space as a single space character however.
+<br><br>
+Other hash functions exist that hash all the month names and day of week names and ALL DIGITS to a specific number in order to ignore the clocks one finds on web pages. Additionally tags can be ignored unless they are a frame or iframe tag. Pure text is hashed as lower case alnum. Punctuatuation and spaces can be skipped over. This algoritm is currently unused but is available in the getLooseContentHash() function.
+<br><br>
+If we see a &lt;link href=<i>xxx</i> rel=canonical&gt; tag in the page and our url is different than <i>xxx</i>, then we do not index the url and use the <a href=#indexcode>ENOTCANONICAL</a> error, but we do insrt a spider request for the referenced canonical url so it can get picked up. The error when downloading such urlsshows up as "Url was dup of canonical page" in the logs. The canonical URL we insert should inherit the same SpiderRequest::m_isInjecting or SpiderRequest::m_isAddUrl bits of the "dup" url it came from, similar to how simplified meta redirects work.
 <br><br>
 
 
 <a name="indexcode"></a>
 <h2>Indexing Error Codes</h2>
-Msg16, and sometimes Msg14, will set Msg16::m_indexCode to various things to 
-indicate conditions as to why the document did not get indexed. These error 
+When trying to index a document we call XmlDoc::getIndexCode() to see if there was a problem. 0 means everything is good. Typically an error will be indicative of not indexing the document, or sometimes even removing it if it was indexed. Sometimes an error code will just do knowthing except add a SpiderReply to Spiderdb indicating the error so that the document might be tried again in the future. Sometimes, like in the case of simplified meta rediriects we will add the new url's SpiderRequest to spiderdb as well. So we handle all errors on an individual basis.
+<br><br>
+hese error 
 codes are all in <a href="#errno">Errno.h</a>.
 <br><br>
 <table cellpadding=3 border=1>
@@ -1796,6 +1777,7 @@ codes are all in <a href="#errno">Errno.h</a>.
 <tr><td>EDOCTOOMANYREDIRECTS</td><td>Url had more than 6 redirects.</td></tr>
 <tr><td>EDOCBADREDIRECTURL</td><td>The redirect url was empty.</td></tr>
 <tr><td>EDOCSIMPLIFIEDREDIR</td><td>The document redirected to a simpler url, which had less path components, did not have cgi, or for whatever reason was prettier to look at. The current url will be discarded and the redirect url will be added to spiderdb.</td></tr>
+<tr><td>EDOCNONCANONICAL</td><td>Doc has a canonical link reference a url that was not itself. Used for deduping at spider time.</td></tr>
 <tr><td>EDOCNODOLLAR</td><td>Document did not contain a dollar sign followed by a price. Used for building shopping indexes.</td></tr>
 <tr><td>EDOCHASBADRSS</td><td>This should not happen.</td></tr>
 <tr><td>EDOCISANCHORRSS</td><td>This should not happen.</td></tr>
@@ -1923,7 +1905,7 @@ pstotext, etc. and send the html/text content back to gb via stdout.
 <h2>DocIds</h2>
 Every document indexed by Gigablast has a unique document id, called a docid. The docid is usually just the hash of the url it represents. Titledb::getProbableDocId() takes the url as a parameter and returns the probable docid for that url. The reason the docid is <i>probable</i> is that it may collide with the docid of an existing url and therefore will have to be changed. When we index a document, Msg14, the Msg class which is primarily responsible for indexing a document, calls Msg15::getOldDoc() to  retrieve the TitleRec (record in Titledb) for the supplied url (the url being indexed). Msg15 will then call Msg22::getTitleRec() to actually get the TitleRec for that url. If a TitleRec is not found for the given url then <b>Msg22.cpp</b> will sets its m_availDocId so Msg14 will know which available docid it can use for that url. 
 <br><br>
-Msg22 will actually load a list of TitleRecs from titledb corresponding to all the possible actual docids for the url. When the probable docid for a new url collides with the docid of an existing url, as evidenced by the TitleRec list, then Gigablast increments the new url's docid by one. Gigablast will only change the last six bits (bits 0-5) of a docid for purposes of collision resolution and it will wrap the docid if it tops out (see Msg22::gotUrlListWrapper). Titledb::getFirstProbableDocId() and Titledb::getLastProbableDocId() define the range of actual docids available given a probable docid by masking out or adding bits 0-5.  Bits 7 and up of the docid are used to determine which host in the network is responsible for storing the TitleRec for that docid, as illustrated in Titledb::getGroupId(). That is why collision resolution is limited to the lower six bits, because we don't want to, through collision resolution, resolve a TitleRec to another host, we want to keep it local. We also do not want the high bits of the docid being used for determining the group which stores that docId because when reading the termlist of linkers to a particular url, they are sorted by docId, which means we end up hitting one particular host in the network much harder than the rest when we attempt to extract the link text. If we have to increase these 6 bits in the future, then we may consider using some higher bits, like maybe bits 12 and up or something to avoid messing with the bits that control what hosts stores the TitleRec.
+Msg22 will actually load a list of TitleRecs from titledb corresponding to all the possible actual docids for the url. When the probable docid for a new url collides with the docid of an existing url, as evidenced by the TitleRec list, then Gigablast increments the new url's docid by one. Gigablast will only change the last six bits (bits 0-5) of a docid for purposes of collision resolution and it will wrap the docid if it tops out (see Msg22::gotUrlListWrapper). Titledb::getFirstProbableDocId() and Titledb::getLastProbableDocId() define the range of actual docids available given a probable docid by masking out or adding bits 0-5.  Bits 7 and up of the docid are used to determine which host in the network is responsible for storing the TitleRec for that docid, as illustrated in Titledb::getGroupId(). That is why collision resolution is limited to the lower six bits, because we don't want to, through collision resolution, resolve a TitleRec to another host, we want to keep it local. We also do not want the high bits of the docid being used for determining the group (shard) which stores that docId because when reading the termlist of linkers to a particular url, they are sorted by docId, which means we end up hitting one particular host in the network much harder than the rest when we attempt to extract the link text. If we have to increase these 6 bits in the future, then we may consider using some higher bits, like maybe bits 12 and up or something to avoid messing with the bits that control what hosts stores the TitleRec.
 <br><br>
 When Msg15 asks Msg22 for the TitleRec of a url being indexed, Msg22 will either return the TitleRec or, if the TitleRec does not exist for that url, it will set Msg22::m_availDocId to an available docid for that url to use. When looking up a TitleRec from a url, the first thing Msg22 does is define a startKey and endKey for a fetch of records from Urldb. Urldb consists of a bunch of dataless keys. Each of these keys consist of a docid, a hash extension and a file number.
 <br><br>
@@ -2016,7 +1998,7 @@ The query syntax is described on <a href="http://www.gigablast.com/help.html">gi
 <h2>Raiding TermList Intersections</h2>
 An option for improving efficiency and parallelization is to "raid" term list disk reads and intersections.  There are multiple layers of "raiding" to distribute both disk reads and CPU use.  One level of disk raiding, called Indexdb Splitting, is implemented durring indexing.  Indexdb term lists are split between multiple hosts so that smaller parts of the full list may be read in parallel.  Another level of raiding splits the term list intersection between multiple "mercenary" hosts.  This can be done using Msg33 which replaces the functionality typically performed by Msg2 and some of that performed by Msg39.  An additional level of raiding may be performed by Msg33 to further split term list reads between twins.
 <br><br>
-Indexdb Splitting is enabled in the code by defining the SPLIT_INDEXDB #define.  The number splits to make is set with the INDEXDB_SPLIT #define.  For a single given term list, this will split which group the each term/docid entry is stored on based on the docid.  The seperate pieces of one term list will be retrieved and combined in one of two ways.  For general purpose access, a single Msg0 call may be made the same way it would normally be done without splitting.  Msg0 will then forward the request to all hosts storing a split piece of the desired list.  When each piece is collected, Msg0 will merge them together into one list.  Alternately, for queries, Msg33 may be used to take further advantage of the splitting (see below).
+Indexdb Splitting is enabled in the code by defining the SPLIT_INDEXDB #define.  The number splits to make is set with the INDEXDB_SPLIT #define.  For a single given term list, this will split which group (shard) the each term/docid entry is stored on based on the docid.  The seperate pieces of one term list will be retrieved and combined in one of two ways.  For general purpose access, a single Msg0 call may be made the same way it would normally be done without splitting.  Msg0 will then forward the request to all hosts storing a split piece of the desired list.  When each piece is collected, Msg0 will merge them together into one list.  Alternately, for queries, Msg33 may be used to take further advantage of the splitting (see below).
 <br><br>
 The primary function of Msg33 is to split term lists apart so that the intersection can be done in parallel.  Msg33 actually consists of multiple stages.  In the initial stage, "stage 0", the host processing Msg39 will create a Msg33 and allow it to retrieve the docids required.  This Msg33 will choose a number of hosts to act as "mercenary" machines, hosts which will recieve a piece of each term list and intersect those pieces together.  The number of mercenaries is either set as a parm or forced to the number of Indexdb Splits when using Indexdb Splitting.  Each mercenary is essentially responsible for a set of docids.
 <br>
@@ -2349,11 +2331,13 @@ Here is a list and description of all the source code files.
 <tr><td>Msg2a</td><td>admin</td><td>Makes catdb, for assigning documents to a category in DMOZ.</td></tr>
 <tr><td>Msg2b</td><td>admin</td><td>Makes catdb, for assigning documents to a category in DMOZ.</td></tr>
 <tr><td>Msg3</td><td>DB</td><td>Reads an RdbList from several consecutive files in a particular Rdb.</td></tr>
+<!--
 <tr><td>Msg30</td><td>Admin</td><td>Unused.</td></tr>
 <tr><td>Msg33</td><td>Search</td><td>Unused. Did raid stuff.</td></tr>
-<tr><td>Msg34</td><td>DB</td><td>Determines least loaded host in a group of hosts.</td></tr>
+<tr><td>Msg34</td><td>DB</td><td>Determines least loaded host in a group (shard) of hosts.</td></tr>
 <tr><td>Msg35</td><td>DB</td><td>Merge token managament functions. Currently does not work.</td></tr>
 <tr><td>Msg36</td><td>Search</td><td>Gets the length of an IndexList for determining query term weights.</td></tr>
+-->
 <tr><td>Msg37</td><td>Search</td><td>Calls a Msg36 for each term in the query.</td></tr>
 <tr><td>Msg38</td><td>Search</td><td>Returns the Clusterdb record for a docId. May also get for Titledb record if its key is in the RdbMap.</td></tr>
 <tr><td>Msg39</td><td>Search</td><td>Intersects IndexLists to get list of docIds satisfying query. Uses Msg38 to cluster away dups and same-site results. Re-intersects lists to get more docIds if too many were removed. Uses Msg2, Msg38, IndexReadInfo, IndexTable. This and IndexTable are the heart of the query resolution process.</td></tr>
@@ -2366,7 +2350,7 @@ Here is a list and description of all the source code files.
 <tr><td>Msg8</td><td>Build</td><td>Gets the Sitedb record given a url.</td></tr>
 <tr><td>Msg9</td><td>Build</td><td>Adds a Sitedb record to Sitedb for a given site/url.</td></tr>
 <tr><td>MsgB</td><td>DB</td><td>Unused. A distributed cache for caching anything.</td></tr>
-<tr><td>Multicast</td><td>Net</td><td>Used to reroute a request if it fails to be answered in time. Also used to send a request to multiple hosts in the cluster, usually to a group for data storage purposes.</td></tr>
+<tr><td>Multicast</td><td>Net</td><td>Used to reroute a request if it fails to be answered in time. Also used to send a request to multiple hosts in the cluster, usually to a group (shard) for data storage purposes.</td></tr>
 <tr><td>PageAddColl</td><td>Admin</td><td>HTML page to add a new collection.</td></tr>
 <tr><td>PageAddUrl</td><td>Build</td><td>HTML page to add a url or file of urls to spiderdb.</td></tr>
 <tr><td>PageCatdb</td><td>Admin/Build</td><td>HTML page to lookup the categories of a url in catdb.</td></tr>

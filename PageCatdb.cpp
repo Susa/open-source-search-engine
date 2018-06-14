@@ -1,6 +1,6 @@
 #include "gb-include.h"
 
-#include "CollectionRec.h"
+//#include "CollectionRec.h"
 #include "Pages.h"
 #include "Msg2a.h"
 #include "Msg8b.h"
@@ -14,21 +14,21 @@ public:
 	TcpSocket   *m_socket;
 	HttpRequest  m_r;
 	char         m_coll[MAX_COLL_LEN];
-	long         m_collLen;
+	int32_t         m_collLen;
 	Msg2a        m_msg2a;
 	Msg8b        m_msg8b;
 	Url          m_url;
 	CatRec       m_catRec;
 	bool         m_catLookup;
 	bool         m_genCatdb;
-	long long    m_startTime;
+	int64_t    m_startTime;
 };
 
 // . returns false if blocked, true otherwise
 // . sets g_errno on error
 bool sendPageCatdb ( TcpSocket *s , HttpRequest *r ) {
 	// are we the admin?
-	bool isAdmin    = g_collectiondb.isAdmin    ( r , s );
+	//bool isAdmin    = g_collectiondb.hasPermission ( r , s );
 	// get the collection record
 	CollectionRec *cr = g_collectiondb.getRec ( r );
 	if ( ! cr ) {
@@ -38,31 +38,46 @@ bool sendPageCatdb ( TcpSocket *s , HttpRequest *r ) {
 		return g_httpServer.sendErrorReply ( s , 500 ,
 						  "collection does not exist");
 	}
+	/*
 	bool isAssassin = cr->isAssassin ( s->m_ip );
 	if ( isAdmin ) isAssassin = true;
 	// bail if permission denied
 	if ( ! isAssassin && ! cr->hasPermission ( r , s ) ) {
 		log("admin: Bad collection name or password. Could not add "
 		    "sites to tagdb. Permission denied.");
-		return sendPageLogin ( s , r , 
+		return sendPagexxxx ( s , r , 
 						    "Collection name or "
 						    "password is incorrect");
 	}
+	*/
+
+
+	// no permmission?
+	bool isMasterAdmin = g_conf.isMasterAdmin ( s , r );
+	bool isCollAdmin = g_conf.isCollAdmin ( s , r );
+	if ( ! isMasterAdmin &&
+	     ! isCollAdmin ) {
+		g_errno = ENOPERM;
+		g_httpServer.sendErrorReply(s,g_errno,mstrerror(g_errno));
+		return true;
+	}
+
+
 	// get the collection
-	long collLen = 0;
+	int32_t collLen = 0;
 	char *coll   = r->getString("c", &collLen, NULL);
 	// check for generate catdb command
-	long genCatdb = r->getLong("gencatdb", 0);
+	int32_t genCatdb = r->getLong("gencatdb", 0);
 	// check for a lookup url
-	long urlLen = 0;
+	int32_t urlLen = 0;
 	char *url   = r->getString("caturl", &urlLen, NULL);
 	// create the State
 	StateCatdb *st;
 	try { st = new (StateCatdb); }
 	catch ( ... ) {
 		g_errno = ENOMEM;
-		log("catdb: Unable to allocate %i bytes for StateCatdb",
-		    sizeof(StateCatdb) );
+		log("catdb: Unable to allocate %"INT32" bytes for StateCatdb",
+		    (int32_t)sizeof(StateCatdb) );
 		return true;
 	}
 	mnew ( st, sizeof(StateCatdb), "PageCatdb" );
@@ -71,7 +86,7 @@ bool sendPageCatdb ( TcpSocket *s , HttpRequest *r ) {
 	st->m_r.copy(r);
 	// copy collection
 	if (collLen > MAX_COLL_LEN) collLen = MAX_COLL_LEN - 1;
-	memcpy(st->m_coll, coll, collLen);
+	gbmemcpy(st->m_coll, coll, collLen);
 	st->m_coll[collLen] = '\0';
 	st->m_collLen = collLen;
 	// defaults
@@ -105,8 +120,8 @@ bool sendPageCatdb ( TcpSocket *s , HttpRequest *r ) {
 		st->m_url.set(url, urlLen);
 		// call msg8b to lookup in catdb
 		if (!st->m_msg8b.getCatRec ( &st->m_url,
-					      st->m_coll,
-					      st->m_collLen,
+					     NULL,//st->m_coll,
+					     0,//st->m_collLen,
 					      true,
 					      1,
 					      &st->m_catRec,
@@ -141,7 +156,7 @@ bool sendReply ( void *state ) {
 		st->m_catLookup = false;
 		g_errno = 0;
 	}
-	long long endTime = gettimeofdayInMilliseconds();
+	int64_t endTime = gettimeofdayInMilliseconds();
 	// page buffer
 	SafeBuf sb;
 	sb.reserve(64*1024);
@@ -149,30 +164,54 @@ bool sendReply ( void *state ) {
 	// . do not print big links if only an assassin, just print host ids
 	g_pages.printAdminTop ( &sb, st->m_socket , &st->m_r );
 
-	sb.safePrintf ( "<table width=100%% bgcolor=#%s border=1 cellpadding=4>"
-			"<tr><td bgcolor=#%s colspan=2>"
+	sb.safePrintf(
+		      "<style>"
+		      ".poo { background-color:#%s;}\n"
+		      "</style>\n" ,
+		      LIGHT_BLUE );
+
+
+	sb.safePrintf ( "<table %s>"
+			"<tr><td colspan=2>"
 			"<center><font size=+1><b>Catdb</b></font></center>"
-			"</td></tr>", LIGHT_BLUE , DARK_BLUE );
+			"</td></tr>", TABLE_STYLE );
+
+	// instructions
+	sb.safePrintf("<tr bgcolor=#%s>"
+		      "<td colspan=3>"
+		      "<font size=-2>"
+		      "<center>"
+		      "Don't just start using this, you need to follow the "
+		      "instructions in the <i>admin guide</i> for adding "
+		      "DMOZ support."
+		      "</center>"
+		      "</font>"
+		      "</td>"
+		      "</tr>"
+		      ,DARK_BLUE
+		      );
 
 	// print the generate Catdb link
-	sb.safePrintf ( "<tr><td>Update Catdb from DMOZ data.</td>"
+	sb.safePrintf ( "<tr class=poo><td>Update Catdb from DMOZ data.</td>"
 			"<td><center>"
-			"<a href=\"/master/catdb?c=%s&gencatdb=2\">"
+			"<a href=\"/admin/catdb?c=%s&gencatdb=2\">"
 			"Update Catdb</a> "
 			"</center></td></tr>",
 			st->m_coll );
-	sb.safePrintf ( "<tr><td>Generate New Catdb from DMOZ data.</td>"
+	sb.safePrintf ( "<tr class=poo>"
+			"<td>Generate New Catdb from DMOZ data.</td>"
 			"<td><center>"
-			"<a href=\"/master/catdb?c=%s&gencatdb=1\">"
+			"<a href=\"/admin/catdb?c=%s&gencatdb=1\">"
 			"Generate Catdb</a> "
 			"</center></td></tr>",
 			st->m_coll );
 	if (st->m_genCatdb)
-		sb.safePrintf ( "<tr><td> Catdb Generation took %lli ms."
+		sb.safePrintf ( "<tr class=poo>"
+				"<td> Catdb Generation took %"INT64" ms."
 				"</td></tr>",
 				endTime - st->m_startTime );
 	// print Url Catgory Lookup
-	sb.safePrintf ( "<tr><td>Lookup Category of Url.</td>"
+	sb.safePrintf ( "<tr class=poo><td>Lookup Category of Url.</td>"
 			"<td><input type=text name=caturl size=80"
 			" value=\"");
 	if (st->m_catLookup) {
@@ -184,20 +223,20 @@ bool sendReply ( void *state ) {
 		sb.safePrintf("<tr><td>");
 		// print the url
 		sb.safeMemcpy(st->m_url.getUrl(), st->m_url.getUrlLen());
-		sb.safePrintf(" (%lli ms)</td><td>",
+		sb.safePrintf(" (%"INT64" ms)</td><td>",
 				endTime - st->m_startTime );
 		// print each category id and path
-		for (long i = 0; i < st->m_catRec.m_numCatids; i++) {
-			sb.safePrintf("<b>[%li] ",
+		for (int32_t i = 0; i < st->m_catRec.m_numCatids; i++) {
+			sb.safePrintf("<b>[%"INT32"] ",
 					st->m_catRec.m_catids[i]);
 			g_categories->printPathFromId(&sb,
 					st->m_catRec.m_catids[i]);
 			sb.safePrintf("</b><br>");
 			// lookup title and summary
 			char  title[1024];
-			long  titleLen = 0;
+			int32_t  titleLen = 0;
 			char  summ[4096];
-			long  summLen = 0;
+			int32_t  summLen = 0;
 			char  anchor[256];
 			unsigned char anchorLen = 0;
 			g_categories->getTitleAndSummary(
@@ -225,16 +264,16 @@ bool sendReply ( void *state ) {
 						anchor);
 			sb.safePrintf("<br>");
 		}
-		sb.safePrintf("<b>Filenum:</b> %li<br>",
+		sb.safePrintf("<b>Filenum:</b> %"INT32"<br>",
 				st->m_catRec.m_filenum);
 		// print indirect catids
 		if (st->m_catRec.m_numIndCatids > 0) {
-			sb.safePrintf("<hr><b>Indirect Catids [%li]:"
+			sb.safePrintf("<hr><b>Indirect Catids [%"INT32"]:"
 					"</b><br>\n",
 					st->m_catRec.m_numIndCatids );
-			for (long i = 0;
+			for (int32_t i = 0;
 				  i < st->m_catRec.m_numIndCatids; i++) {
-				sb.safePrintf("%lu<br>",
+				sb.safePrintf("%"UINT32"<br>",
 					st->m_catRec.m_indCatids[i]);
 			}
 		}

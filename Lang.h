@@ -72,7 +72,8 @@ enum {
 	langMalgasy        = 52,
 	langKurdish        = 53,
 	langLuxembourgish  = 54,
-	langEstonian       = 55
+	langEstonian       = 55,
+	langLast           = 56
 };
 
 uint8_t getLanguageFromName(uint8_t *name);
@@ -84,7 +85,7 @@ char* 	 getLanguageString ( unsigned char lang);
 char* 	 getNativeLanguageString ( unsigned char lang);
 char*    getLanguageAbbr ( unsigned char lang);
 unsigned char  getLanguageCharset ( unsigned char LangId );
-bool     isAdult( char *s, long slen, char **loc = NULL );
+bool     isAdult( char *s, int32_t slen, char **loc = NULL );
 //unsigned char getLanguageFromScript(UChar32 c);
 unsigned char getLanguageFromAbbr(char *abbr);
 unsigned char getLanguageFromAbbrN(char *abbr);

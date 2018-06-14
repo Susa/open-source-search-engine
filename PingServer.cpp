@@ -1,6 +1,14 @@
 #include "gb-include.h"
 
+// cygwin and apple mac os x does not support klogctl
+#if defined(CYGWIN) || defined(__APPLE__)
+// use a stub
+int32_t klogctl( int, char *,int ) { return 0; }
+#else
+// otherwise, use the real one
 #include <sys/klog.h> // for klogctl
+#endif
+
 #include "PingServer.h"
 #include "UdpServer.h"
 //#include "Sync.h"
@@ -13,23 +21,29 @@
 #include "DailyMerge.h"
 #include "Spider.h"
 #include "Test.h"
+#include "Rebalance.h"
+#include "Version.h"
 
 #define PAGER_BUF_SIZE (10*1024)
+
+// from main.cpp. when keepalive script restarts us this is true
+extern bool g_recoveryMode;
+extern int32_t g_recoveryLevel;
 
 // a global class extern'd in .h file
 PingServer g_pingServer;
 
 char s_kernelRingBuf[4097];
-long s_kernelRingBufLen = 0;
+int32_t s_kernelRingBufLen = 0;
 
 static void sleepWrapper ( int fd , void *state ) ;
 //static void sleepWrapper10 ( int fd , void *state );
 static void checkKernelErrors( int fd, void *state );
 static void gotReplyWrapperP ( void *state , UdpSlot *slot ) ;
-static void handleRequest11 ( UdpSlot *slot , long niceness ) ;
+static void handleRequest11 ( UdpSlot *slot , int32_t niceness ) ;
 static void gotReplyWrapperP2 ( void *state , UdpSlot *slot );
 static void gotReplyWrapperP3 ( void *state , UdpSlot *slot );
-static void updatePingTime ( Host *h , long *pingPtr , long tripTime ) ;
+static void updatePingTime ( Host *h , int32_t *pingPtr , int32_t tripTime ) ;
 // JAB: warning abatement
 //static bool pageTMobile ( Host *h , char *errmsg ) ;
 //static bool pageAlltel  ( Host *h , char *errmsg , char *num ) ;
@@ -69,7 +83,7 @@ bool PingServer::registerHandler ( ) {
 	// . so in a network of 128 hosts we'll cycle through in 12.8 seconds
 	//   and set a host to dead on avg will take about 13 seconds
 	if ( ! g_loop.registerSleepCallback ( g_conf.m_pingSpacer , // ~100ms
-					      (void *)m_callnum , // NULL , 
+					      (void *)(PTRTYPE)m_callnum,//NULL
 					      sleepWrapper , 0 ) )
 		return false;
 	// if not host #0, we're done
@@ -91,7 +105,7 @@ bool PingServer::registerHandler ( ) {
 	return true;
 }
 
-static long s_outstandingPings = 0;
+static int32_t s_outstandingPings = 0;
 
 // . gets filename that contains the hosts from the Conf file
 // . return false on errro
@@ -119,6 +133,10 @@ bool PingServer::init ( ) {
 	m_bestPing     = -1;
 	m_bestPingDate =  0;
 
+	m_numHostsWithForeignRecs = 0;
+	m_numHostsDead = 0;
+	m_hostsConfInDisagreement = false;
+	m_hostsConfInAgreement = false;
 
 	// . send a ping request to everybody on the network right now!
 	// . no, sleepWrapper needs to do it when g_loop is working
@@ -159,8 +177,8 @@ void PingServer::initKernelErrorCheck(){
 
 
 	// clear the kernel Errors 
-	for ( long i = 0; i < g_hostdb.m_numHosts; i++ ){
-		g_hostdb.m_hosts[i].m_kernelErrors = 0;
+	for ( int32_t i = 0; i < g_hostdb.m_numHosts; i++ ){
+		g_hostdb.m_hosts[i].m_pingInfo.m_kernelErrors = 0;
 		g_hostdb.m_hosts[i].m_kernelErrorReported = false;
 	}
 
@@ -195,7 +213,7 @@ void PingServer::sendPingsToAll ( ) {
 
 	// do a quick send to host 0 out of band if we have never
 	// got a reply from him. we need him to sync our clock!
-	static long s_lastTime = 0;
+	static int32_t s_lastTime = 0;
 	if ( ! hz->m_inProgress1 && hz->m_numPingReplies == 0 &&
 	     time(NULL) - s_lastTime > 2 ) {
 		// update clock to avoid oversending
@@ -205,7 +223,7 @@ void PingServer::sendPingsToAll ( ) {
 	}
 
 	// once we do a full round, drop out. use firsti to determine this
-	long firsti = -1;
+	int32_t firsti = -1;
 
 	for ( ; m_i != firsti && s_outstandingPings < 5 ; ) {
 		// store it
@@ -238,7 +256,7 @@ void PingServer::sendPingsToAll ( ) {
 	if ( m_pingSpacer == g_conf.m_pingSpacer ) return;
 	// register new one
 	if ( ! g_loop.registerSleepCallback ( m_pingSpacer , // ~100ms
-					      (void *)(m_callnum+1) ,
+					      (void *)(PTRTYPE)(m_callnum+1) ,
 					      sleepWrapper , 0 ) ) {
 		static char logged = 0;
 		if ( ! logged )
@@ -247,21 +265,25 @@ void PingServer::sendPingsToAll ( ) {
 		return;
 	}
 	// now it is safe to unregister last callback then
-	g_loop.unregisterSleepCallback((void *)m_callnum,sleepWrapper);
+	g_loop.unregisterSleepCallback((void *)(PTRTYPE)m_callnum,
+				       sleepWrapper);
 	// point to next one
 	m_callnum++;
 }
 
 
-class HostStatus {
-public:
-	long long m_lastPing;
-	char m_repairMode;
-	char m_kernelError;
-	char m_loadAvg;
-	char m_percentMemUsed;
+// class HostStatus {
+// public:
+// 	int64_t m_lastPing;
+// 	char m_repairMode;
+// 	char m_kernelError;
+// 	char m_loadAvg;
+// 	char m_percentMemUsed;
 
-};
+// };
+
+// from Loop.cpp
+extern float g_cpuUsage;
 
 // ping host #i
 void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
@@ -274,21 +296,21 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 	// return if NULL
 	if ( ! h ) return;
 
-        long hostId = h->m_hostId;
+        int32_t hostId = h->m_hostId;
 
 	// every time this is hostid 0, do a sanity check to make sure
 	// g_hostdb.m_numHostsAlive is accurate
 	if ( hostId == 0 ) {
-                long numHosts = g_hostdb.getNumHosts();
+                int32_t numHosts = g_hostdb.getNumHosts();
                 if( h->m_isProxy )
                         numHosts = g_hostdb.getNumProxy();
 		// do not do more than once every 10 seconds
-		static long lastTime = 0;
-		long now = getTime();
+		static int32_t lastTime = 0;
+		int32_t now = getTime();
 		if ( now - lastTime > 10 ) {
 			lastTime = now;
-			long count = 0;
-			for ( long i = 0 ; i < numHosts; i++ ) {
+			int32_t count = 0;
+			for ( int32_t i = 0 ; i < numHosts; i++ ) {
 				// count if not dead
                                 Host *host;
                                 if ( h->m_isProxy )
@@ -329,11 +351,12 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 	if ( ip == h->m_ip && h->m_inProgress1 ) return;
 	if ( ip != h->m_ip && h->m_inProgress2 ) return;
 	// time now
-	long long nowmsLocal = gettimeofdayInMillisecondsLocal();
-	//long long now2 = gettimeofdayInMillisecondsLocal();
+	int64_t nowmsLocal = gettimeofdayInMillisecondsLocal();
+	//int64_t now2 = gettimeofdayInMillisecondsLocal();
 	// only ping a host once every 5 seconds tops
 	//if ( now - h->m_lastPing < 5000 ) return;
 	// stamp it
+	//h->m_pingInfo.m_lastPing = nowmsLocal;
 	h->m_lastPing = nowmsLocal;
 	// count it
 	s_outstandingPings++;
@@ -365,59 +388,98 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 	//if ( h->m_ping > 1000 && 
 	//     gettimeofdayInMillisecondsLocal()-g_process.m_processStartTime>
 	//     30000 )
-	//	log("gb: Got high ping of %li ms to hostid #%li",
-	//	    (long)h->m_ping,(long)h->m_hostId);
+	//	log("gb: Got high ping of %"INT32" ms to hostid #%"INT32"",
+	//	    (int32_t)h->m_ping,(int32_t)h->m_hostId);
 	// . use the shotgun port to send the request? or the original port?
 	// . the reply will be sent back to the same ip/port as it was sent
 	//   from because in PingServer::handleRequest() we set the
 	//   "useSameSwitch" flag to true when passing to 
 	//   UdpServer::sendReply_ass()
-	//unsigned long ip;
+	//uint32_t ip;
 	//if ( useShotgunIp ) ip   = h->m_ipShotgun;
 	//else                ip   = h->m_ip;
 	Host *me = g_hostdb.m_myHost;
 	// use the tmp buf
 	//char request[14+4+4+1];
 	//char *p = m_request;
+
 	// we can have multiple outstanding pings, so keep request bufs
 	// independent...
-	char *request = h->m_requestBuf;
-	char *p       = h->m_requestBuf;
+	//char *request = h->m_requestBuf;
+	//char *p       = h->m_requestBuf;
+
+	// we send our stats to host "h"
+	PingInfo *pi = &me->m_pingInfo;//RequestBuf;
+
+	pi->m_numCorruptDiskReads = g_numCorrupt;
+	pi->m_numOutOfMems = g_mem.m_outOfMems;
+	pi->m_socketsClosedFromHittingLimit = g_stats.m_closedSockets;
+	pi->m_currentSpiders = g_spiderLoop.m_numSpidersOut;
+
 	// store the last ping we got from it first
-	*(long long *)p = h->m_lastPing; p += sizeof(long long);
+	//*(int64_t *)p = h->m_lastPing; p += sizeof(int64_t);
+
+	// i don't think this should be in pinginfo
+	//pi->m_lastPing = h->m_pingInfo.m_lastPing;
+
 	// let the receiver know our repair mode
-	*p = g_repairMode; p++;
+	//*p = g_repairMode; p++;
+	pi->m_repairMode = g_repairMode;
+
 	// problem is that we know when the error occurs, but don't know when 
 	// the error has been fixed. So just consider this host as dead unless
 	// gb is restarted and the problem is fixed
-	*p = me->m_kernelErrors; p++;
+	//*p = me->m_kernelErrors; p++;
+	//pi->m_kernelErrors = me->m_pingInfo.m_kernelErrors;
+
 	//if ( me->m_kernelErrors ){
 	//char *xx = NULL; *xx = 0;
 	//}
 	int32_t l_loadavg = (int32_t) (g_process.getLoadAvg() * 100.0);
-	memcpy(p, &l_loadavg, sizeof(int32_t));	p += sizeof(int32_t);
+	//gbmemcpy(p, &l_loadavg, sizeof(int32_t));	p += sizeof(int32_t);
+	pi->m_loadAvg = l_loadavg ;
+
 	// then our percent mem used
 	float mem = ((float)g_mem.getUsedMem()*100.0)/(float)g_mem.getMaxMem();
-	*(float *)p = mem ; p += sizeof(float); // 4 bytes
-	// our cpu usage
-	*(float *)p = me->m_cpuUsage ; p += sizeof(float); // 4 bytes
-	// our num recs, docsIndexed
-	*(long*)p = (long)g_clusterdb.getRdb()->getNumTotalRecs();
-	p += sizeof(long);
-	// urls indexed since startup
-	//*(long*)p = (long)g_test.m_urlsIndexed;
-	//p += sizeof(long);
-	// our num recs, eventsIndexed
-	//*(long*)p = g_timedb.getNumTotalEvents();//g_coldb.m_numEventsAllColls;
-	//*(long *)p = 0;
-	//p += sizeof(long);
-	// slow disk reads
-	*(long*)p = g_stats.m_slowDiskReads;
-	p += sizeof(long);
+	//*(float *)p = mem ; p += sizeof(float); // 4 bytes
+	pi->m_percentMemUsed = mem;
 
+	// our cpu usage
+	//*(float *)p = me->m_cpuUsage ; p += sizeof(float); // 4 bytes
+	//pi->m_cpuUsage = me->m_pingInfo.m_cpuUsage;
+
+	// our num recs, docsIndexed
+	//*(int32_t*)p = (int32_t)g_clusterdb.getRdb()->getNumTotalRecs();
+	// *(int32_t*)p = (int32_t)g_process.getTotalDocsIndexed();
+	// p += sizeof(int32_t);
+	pi->m_totalDocsIndexed = (int32_t)g_process.getTotalDocsIndexed();
+
+	// urls indexed since startup
+	//*(int32_t*)p = (int32_t)g_test.m_urlsIndexed;
+	//p += sizeof(int32_t);
+	// our num recs, eventsIndexed
+	//*(int32_t*)p = g_timedb.getNumTotalEvents();//g_coldb.m_numEventsAllColl
+	//*(int32_t *)p = 0;
+	//p += sizeof(int32_t);
+	// slow disk reads
+	// *(int32_t*)p = g_stats.m_slowDiskReads;
+	// p += sizeof(int32_t);
+	pi->m_slowDiskReads = g_stats.m_slowDiskReads;
+
+
+	// and hosts.conf crc
+	//*(int32_t *)p = g_hostdb.getCRC(); p += 4;
+	pi->m_hostsConfCRC = g_hostdb.getCRC();
+
+	// ensure crc is legit
+	if ( g_hostdb.getCRC() == 0 ) { char *xx=NULL;*xx=0; }
+
+	// disk usage (df -ka)
+	//*(float *)p = g_process.m_diskUsage; p += 4;
+	pi->m_diskUsage = g_process.m_diskUsage;
 
 	// flags indicating our state
-	long flags = 0;
+	int32_t flags = 0;
 	// let others know we are doing our daily merge and have turned off
 	// our spiders. when host #0 indicates this state it will wait
 	// for all other hosts to enter the mergeMode. when other hosts
@@ -425,28 +487,66 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 	if ( g_spiderLoop.m_numSpidersOut > 0 ) flags |= PFLAG_HASSPIDERS;
 	if ( g_process.isRdbMerging()         ) flags |= PFLAG_MERGING;
 	if ( g_process.isRdbDumping()         ) flags |= PFLAG_DUMPING;
+	if ( g_rebalance.m_isScanning         ) flags |= PFLAG_REBALANCING;
+	if ( g_recoveryMode                   ) flags |= PFLAG_RECOVERYMODE;
+	if ( g_rebalance.m_numForeignRecs     ) flags |= PFLAG_FOREIGNRECS;
 	if ( g_dailyMerge.m_mergeMode    == 0 ) flags |= PFLAG_MERGEMODE0;
 	if ( g_dailyMerge.m_mergeMode ==0 || g_dailyMerge.m_mergeMode == 6 )
 		flags |= PFLAG_MERGEMODE0OR6;
+	if ( ! isClockInSync() ) flags |= PFLAG_OUTOFSYNC;
 
-	*(long *)p = flags; p += 4; // 4 bytes
+	uint8_t rv8 = (uint8_t)g_recoveryLevel;
+	if ( g_recoveryLevel > 255 ) rv8 = 255;
+	pi->m_recoveryLevel = rv8;
+
+	//*(int32_t *)p = flags; p += 4; // 4 bytes
+	pi->m_flags = flags;
 
 	// the collection number we are daily merging (currently 2 bytes)
 	collnum_t cn = -1;
 	if ( g_dailyMerge.m_cr ) cn = g_dailyMerge.m_cr->m_collnum;
-	*(collnum_t *)p = cn ; p += sizeof(collnum_t);
+	//*(collnum_t *)p = cn ; p += sizeof(collnum_t);
+	pi->m_dailyMergeCollnum = cn;
+
+	pi->m_hostId = me->m_hostId;
+
+	pi->m_localHostTimeMS = gettimeofdayInMillisecondsLocal();
+
+	pi->m_udpSlotsInUseIncoming = g_udpServer.getNumUsedSlotsIncoming();
+
+	pi->m_tcpSocketsInUse = g_httpServer.m_tcp.m_numUsed;
+
+	// from Loop.cpp
+	pi->m_cpuUsage = g_cpuUsage;
 
 	// store hd temps
-	memcpy ( p , me->m_hdtemps , 4 * 2 );
-	p += 4 * 2;
+	// gbmemcpy ( p , me->m_hdtemps , 4 * 2 );
+	// p += 4 * 2;
+	//gbmemcpy ( &pi->m_hdtemps , me->m_pingInfo.m_hdtemps , 4 * 2 );
 
-	long requestSize = p - request;
+	// store the gbVersionStrBuf now, just a date with a \0 included
+	char *v = getVersion();
+	int32_t vsize = getVersionSize(); // 21 bytes
+	// gbmemcpy ( p , v , vsize );
+	// p += vsize;
+	if ( vsize != 21 ) { char *xx=NULL;*xx=0; }
+	gbmemcpy ( pi->m_gbVersionStr , v , vsize );
 
-	// sanity check
-	if ( requestSize != MAX_PING_SIZE ) { char *xx = NULL; *xx = 0; }
+	// int32_t requestSize = sizeof(PingRequest);//p - request;
+
+	// // sanity check
+	// if ( requestSize != sizeof(PingRequest) ) { 
+	// 	// (44+4+4+21) ) { // MAX_PING_SIZE ) { 
+	// 	log("ping: "
+	// 	    "YOU ARE MIXING MULTIPLE GB VERSIONS IN YOUR CLUSTER. "
+	// 	    "MAKE SURE THEY ARE ALL THE SAME GB BINARY");
+	// 	char *xx = NULL; *xx = 0; }
+
+
+	//char *request = (char *)pi;
 
 	// debug msg
-	//logf(LOG_DEBUG,"net: Sending ping request to hid=%li ip=%s.",
+	//logf(LOG_DEBUG,"net: Sending ping request to hid=%"INT32" ip=%s.",
 	//     h->m_hostId,iptoa(ip));
 	// . launch one
 	// . returns false and sets errno on error
@@ -463,13 +563,13 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 
 	// the proxy may be interfacing with the temporary cluster while
 	// we update the main cluster...
-	//long port = h->m_port;
+	//int32_t port = h->m_port;
 	if ( g_proxy.isProxyRunning() && g_conf.m_useTmpCluster )
 		port++;
 
         if ( h->m_isProxy ) hostId = -1;
-	if (  g_udpServer.sendRequest ( request       ,
-					requestSize   ,
+	if (  g_udpServer.sendRequest ( (char *)pi , //request       ,
+					sizeof(PingInfo),//requestSize   ,
 					0x11          ,
 					ip            ,//h->m_ip       ,
 					port          ,//h->m_port     ,
@@ -491,7 +591,7 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 	if ( ip == h->m_ip ) h->m_inProgress1 = false;
 	else                 h->m_inProgress2 = false;
 	// had an error
-	log("net: Pinging host #%li had error: %s.",
+	log("net: Pinging host #%"INT32" had error: %s.",
 	    h->m_hostId,mstrerror(g_errno) );
 	// reset it cuz it's not a showstopper
 	g_errno = 0;
@@ -503,12 +603,12 @@ void PingServer::pingHost ( Host *h , uint32_t ip , uint16_t port ) {
 // . it is so we only send out one email even though a bunch of consecutive
 //   hosts right before us (in hostid ranking) may have gone down. The admin
 //   only needs one notification.
-static long s_lastSentHostId = -1;
+static int32_t s_lastSentHostId = -1;
 
 void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 	// state is the host
         Host *h = (Host *)state;
-	long hid = h->m_hostId;
+	int32_t hid = h->m_hostId;
 	// if host 0 special case.
 	//if ( hid == 0 && g_sendingToHost0 ) {
 	//	// no longer sending to him
@@ -521,11 +621,11 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 	// don't let udp server free our send buf, we own it
 	slot->m_sendBufAlloc = NULL;
 	// update ping time
-	long long nowms    = gettimeofdayInMillisecondsLocal();
-	//long long now2     = gettimeofdayInMillisecondsLocal();
-	long long tripTime = nowms - slot->m_firstSendTime ;
+	int64_t nowms    = gettimeofdayInMillisecondsLocal();
+	//int64_t now2     = gettimeofdayInMillisecondsLocal();
+	int64_t tripTime = nowms - slot->m_firstSendTime ;
 	// what port were we sending to?
-	//unsigned short port = slot->m_port;
+	//uint16_t port = slot->m_port;
 	// ensure not negative, clock might have been adjusted!
 	if ( tripTime < 0 ) tripTime = 0;
 	// get the Host ptr
@@ -534,15 +634,15 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 	if ( ! h ) { log(LOG_LOGIC,"net: pingserver: bad hostId."); return; }
 	// point to the right ping time, for the original port or for the 
 	// shotgun port
-	long *pingPtr = NULL;
+	int32_t *pingPtr = NULL;
 	if ( slot->m_ip == h->m_ipShotgun ) pingPtr = &h->m_pingShotgun;
 	// original overrides shotgun, in case ips match
 	if ( slot->m_ip == h->m_ip        ) pingPtr = &h->m_ping;
 	// otherwise... wierd!!
 	if ( ! pingPtr ) pingPtr = &h->m_ping;
 	// debug msg
-	//logf(LOG_DEBUG,"net: Got ping reply for hid=%li ip=%s "
-	//"tripTime=%lli.", hid,iptoa(slot->m_ip),tripTime);
+	//logf(LOG_DEBUG,"net: Got ping reply for hid=%"INT32" ip=%s "
+	//"tripTime=%"INT64".", hid,iptoa(slot->m_ip),tripTime);
 	// update ping times for this host
 	//*pingPtr = tripTime;
 	if ( g_errno == EUDPTIMEDOUT ) tripTime = g_conf.m_deadHostTimeout;
@@ -565,17 +665,18 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 		     // and this is lefit
 		     h->m_timeOfDeath != 0 &&
 		     // and in our group
-		     h->m_groupId == g_hostdb.m_myHost->m_groupId ) {
+		     //h->m_groupId == g_hostdb.m_myHost->m_groupId ) {
+		     h->m_shardNum == getMyShardNum() ) {
 			// how long dead for?
-			long long delta = nowms - h->m_timeOfDeath;
+			int64_t delta = nowms - h->m_timeOfDeath;
 			// we did it once, do not repeat
 			h->m_timeOfDeath = 0;
 			// num collections
-			long nc = g_collectiondb.m_numRecs;
+			int32_t nc = g_collectiondb.m_numRecs;
 			// if 5 minutes, issue reload if in our group
-			for ( long i = 0 ; i < nc && delta > 2*60*1000 ; i++ ){
+			for ( int32_t i = 0 ; i < nc && delta > 2*60*1000 ; i++ ){
 				// get coll
-				SpiderColl *sc=g_spiderCache.m_spiderColls[i];
+				SpiderColl *sc=g_spiderCache.getSpiderColl(i);
 				// skip if empty
 				if ( ! sc ) continue;
 				// flag it
@@ -591,10 +692,10 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
                         char *buf = "Host";
                         if(h->m_isProxy)
                                 buf = "Proxy";
-			log("net: %s #%li ip=%s is dead. Has not responded to "
-			    "ping in %li ms.", buf, h->m_hostId,
+			log("net: %s #%"INT32" ip=%s is dead. Has not responded to "
+			    "ping in %"INT32" ms.", buf, h->m_hostId,
 			    iptoa(slot->m_ip),
-			    (long)g_conf.m_deadHostTimeout);
+			    (int32_t)g_conf.m_deadHostTimeout);
 			// set dead time
 			h->m_timeOfDeath = nowms;
 			// send a kill -SEGV to the gb process on that
@@ -641,16 +742,16 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 		h->m_wasEverAlive = true;
 	}
 
-	if ( isAlive && h->m_percentMemUsed >= 99.0 &&
+	if ( isAlive && h->m_pingInfo.m_percentMemUsed >= 99.0 &&
 	     h->m_firstOOMTime == 0 )
 		h->m_firstOOMTime = nowms;
-	if ( isAlive && h->m_percentMemUsed < 99.0 )
+	if ( isAlive && h->m_pingInfo.m_percentMemUsed < 99.0 )
 		h->m_firstOOMTime = 0LL;
 	// if this host is alive and has been at 99% or more mem usage
 	// for the last X minutes, and we have got at least 10 ping replies
 	// from him, then send an email alert.
 	if ( isAlive &&
-	     h->m_percentMemUsed >= 99.0 &&
+	     h->m_pingInfo.m_percentMemUsed >= 99.0 &&
 	     nowms - h->m_firstOOMTime >= g_conf.m_sendEmailTimeout )
 		g_pingServer.sendEmail ( h , NULL , true , true );
 
@@ -661,10 +762,13 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 	if ( ! isAlive && nowms - h->m_startTime >= g_conf.m_sendEmailTimeout) 
 		g_pingServer.sendEmail ( h ) ;
 
+
+	PingInfo *pi = &h->m_pingInfo;
+
 	// if this host is alive but has some kernel error, then send an
 	// email alert.
-	if ( h->m_kernelErrors && !h->m_kernelErrorReported ){
-		log("net: Host #%li is reporting kernel errors.",
+	if ( pi->m_kernelErrors && !h->m_kernelErrorReported ){
+		log("net: Host #%"INT32" is reporting kernel errors.",
 		    h->m_hostId);
 		// MDW: disable for now, so does not wake us up at 3am
 		//g_pingServer.sendEmail ( h, NULL, true, false, true );
@@ -672,7 +776,7 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
 	}
 	
 	// reset if the machine has come back up
-	if ( !h->m_kernelErrors && h->m_kernelErrorReported )
+	if ( !pi->m_kernelErrors && h->m_kernelErrorReported )
 		h->m_kernelErrorReported = false;
 
 	// reset in case sendEmail() set it
@@ -690,7 +794,7 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
                  slot->m_readBufSize == 9 && slot->m_readBuf ) {
 		h->m_syncStatus = *(slot->m_readBuf);
                 if ( *pingPtr < 200 ) {
-                        long long time = *(long long*)(slot->m_readBuf+1);
+                        int64_t time = *(int64_t*)(slot->m_readBuf+1);
                         settimeofdayInMillisecondsGlobal(time);
                         //time_t tmt = time/1000;
                         //log("net: Proxy got time of %s", ctime(&tmt));
@@ -699,12 +803,12 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
         */
 
 	// debug msg
-	//log("slot=%li, g_errno=%li (%s) "
-	//     "hostId %li has ping of %li",
-	//     (long)slot,g_errno,mstrerror(g_errno),hid,tripTime);
+	//log("slot=%"INT32", g_errno=%"INT32" (%s) "
+	//     "hostId %"INT32" has ping of %"INT32"",
+	//     (int32_t)slot,g_errno,mstrerror(g_errno),hid,tripTime);
 	// if we're host #0 and he responded really quickly, 
 	// tell him to sync to our time
-        //long h0MachineNum = g_hostdb.getMachineNum(0);
+        //int32_t h0MachineNum = g_hostdb.getMachineNum(0);
 	if (myHost && myHost->m_isProxy) return;
 	if ( g_hostdb.m_hostId != 0 ) return;
 	if ( *pingPtr > 200         ) return;
@@ -725,16 +829,20 @@ void gotReplyWrapperP ( void *state , UdpSlot *slot ) {
         if ( h->m_isProxy ) hid = -1;
 
 	// send back what his ping was so he knows
-	*(long *)h->m_requestBuf = *pingPtr;
+	//*(int32_t *)h->m_requestBuf = *pingPtr;
+	//h->m_pingInfo.m_lastPing = *pingPtr;
+	*(int32_t *)h->m_tmpBuf = *pingPtr;
 
-	if ( g_udpServer.sendRequest ( h->m_requestBuf ,
+
+	if ( g_udpServer.sendRequest (h->m_tmpBuf,//RequestBuf,
+				      //h->m_requestBuf ,
 				       4               , // 4 byte request
 				       0x11          ,
 				       slot->m_ip    , // h->m_ip       ,
 				       slot->m_port  , // h->m_port2    ,
 				       hid   ,
 				       NULL          ,
-				       (void *)h->m_hostId, // callback state
+				       (void *)(PTRTYPE)h->m_hostId, //cb state
 				       gotReplyWrapperP3 ,
 				       // timeout
 				       (g_conf.m_deadHostTimeout/1000)+1 , 
@@ -768,35 +876,35 @@ void gotReplyWrapperP3 ( void *state , UdpSlot *slot ) {
 }
 
 // record time in the ping request iff from hostId #0
-static long long s_deltaTime = 0;
+static int64_t s_deltaTime = 0;
 
 // this may be called from a signal handler now...
-void handleRequest11 ( UdpSlot *slot , long niceness ) {
+void handleRequest11 ( UdpSlot *slot , int32_t niceness ) {
 	// get request 
 	//char *request     = slot->m_readBuf;
-	long  requestSize = slot->m_readBufSize;
+	int32_t  requestSize = slot->m_readBufSize;
 	char *request     = slot->m_readBuf;
 	// get the ip/port of requester
-	unsigned long ip    = slot->m_ip;
-	unsigned short port = slot->m_port;
+	uint32_t ip    = slot->m_ip;
+	uint16_t port = slot->m_port;
 	// get the host entry
 	Host *h = g_hostdb.getHost ( ip , port );
 	// we may be the temporary cluster (grep for useTmpCluster) and
 	// the proxy is sending pings from its original port plus 1
 	if ( ! h ) h = g_hostdb.getHost ( ip , port + 1 );
 	// debug
-	//fprintf(stderr,"GOT PING insighandler=%li rsize=%li h=%li\n",
-	//	(long)g_inSigHandler,requestSize,(long)h);
+	//fprintf(stderr,"GOT PING insighandler=%"INT32" rsize=%"INT32" h=%"INT32"\n",
+	//	(int32_t)g_inSigHandler,requestSize,(int32_t)h);
 	if ( ! h ) {
 		// size of 3 means it is a debug ping from
 		// proxy server is a connectIp, so don't display the message
 		// ./gb ./hosts.conf <hid> --udp
 		if ( requestSize != 3 && ! g_conf.isConnectIp(ip) )
 			log(LOG_LOGIC,"net: pingserver: No host for "
-			    "dstip=%s port=%hu tid=%li fromhostid=%li",
+			    "dstip=%s port=%hu tid=%"INT32" fromhostid=%"INT32"",
 			    iptoa(ip),port,slot->m_transId,slot->m_hostId);
-		//static long s_count = 0;
-		//fprintf(stderr,"GOT %li\n",s_count++);
+		//static int32_t s_count = 0;
+		//fprintf(stderr,"GOT %"INT32"\n",s_count++);
 		//g_udpServer2.sendErrorReply ( slot , 1 );
 		// set "useSameSwitch" to true so even if shotgunning is on
 		// the udp server will send the reply back to the same ip/port
@@ -818,13 +926,13 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 
 	// point to the correct ping time. this request may have come from
 	// the shotgun network, or the primary network.
-	long *pingPtr = NULL;
+	int32_t *pingPtr = NULL;
 	if ( slot->m_ip == h->m_ipShotgun ) pingPtr = &h->m_pingShotgun;
 	// original overrides shotgun, in case ips match
 	if ( slot->m_ip == h->m_ip        ) pingPtr = &h->m_ping;
 	// otherwise... wierd!!
 	if ( ! pingPtr ) pingPtr = &h->m_ping;
-	//logf(LOG_DEBUG,"net: Got ping request from hid=%li ip=%s",
+	//logf(LOG_DEBUG,"net: Got ping request from hid=%"INT32" ip=%s",
 	//     h->m_hostId,iptoa(slot->m_ip));
 	// . he's definitely not dead since he sent us a request
 	// . NO! he might not be able to see our packets but we can see his!
@@ -838,16 +946,28 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 	//}
 	// reply msg
 	char *reply     = NULL;
-	long  replySize = 0;
+	int32_t  replySize = 0;
 
 	// . a request size of 10 means to set g_repairMode to 1
 	// . it can only be advanced to 2 when we receive ping replies from
 	//   everyone that they are not spidering or merging titledb...
-	if ( requestSize == MAX_PING_SIZE){//14+4+4+4+4+sizeof(collnum_t)+1 ) {
+	if ( requestSize == sizeof(PingInfo)){
+		//MAX_PING_SIZE
+		//14+4+4+4+4+sizeof(collnum_t)+1 ) {
+
+		// sanity
+		PingInfo *pi2 = (PingInfo *)request;
+		if ( pi2->m_hostId != h->m_hostId ) { 
+			char *xx=NULL;*xx=0; }
+
+		// now we just copy the class
+		gbmemcpy ( &h->m_pingInfo , request , requestSize );
+
+		/*
 		char* p = request + 10;
 		// fetch load avg...
-		h->m_loadAvg = ((double)(*((long*)(p)))) / 100.0;
-		p += sizeof(long);
+		h->m_loadAvg = ((double)(*((int32_t*)(p)))) / 100.0;
+		p += sizeof(int32_t);
 		// and mem used
 		h->m_percentMemUsed = *(float *)(p);
 		p += sizeof(float);
@@ -856,37 +976,55 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 		p += sizeof(float);
 
 		// the host's global doc count.
-		h->m_docsIndexed = *(long*)(p);
-		p += sizeof(long);
+		h->m_docsIndexed = *(int32_t*)(p);
+		p += sizeof(int32_t);
+		*/
 
 		// how many we indexed since startup
-		//h->m_urlsIndexed = *(long*)(p);
-		//p += sizeof(long);
+		//h->m_urlsIndexed = *(int32_t*)(p);
+		//p += sizeof(int32_t);
 
 		// the host's event count.
-		//h->m_eventsIndexed = *(long*)(p);
-		//p += sizeof(long);
+		//h->m_eventsIndexed = *(int32_t*)(p);
+		//p += sizeof(int32_t);
 
+		/*
 		// slow disk reads is important
-		h->m_slowDiskReads = *(long*)(p);
-		p += sizeof(long);
+		h->m_slowDiskReads = *(int32_t*)(p);
+		p += sizeof(int32_t);
+
+		h->m_hostsConfCRC = *(int32_t*)(p);
+		p += sizeof(int32_t);
+		// sanity
+		if ( h->m_hostsConfCRC == 0 ) { char *xx=NULL;*xx=0; }
+
+		// disk usage
+		h->m_diskUsage = *(float *)p;
+		p += sizeof(float);
 
 		// put the state flags
-		h->m_flags = *(long *)(p);
-		p += sizeof(long);
+		h->m_flags = *(int32_t *)(p);
+		p += sizeof(int32_t);
 
 		// the collnum it is daily merging
 		h->m_dailyMergeCollnum = *(collnum_t *)(p);
 		p += sizeof(collnum_t);
 		
 		// the 4 hd temps
-		memcpy ( h->m_hdtemps , p , 4 * 2 );
+		gbmemcpy ( h->m_hdtemps , p , 4 * 2 );
 		p += 4 * 2;
+
+		// at the end the gbverstionstrbuf
+		int32_t vsize = getVersionSize(); // 21
+		gbmemcpy ( h->m_gbVersionStrBuf , p , vsize );
+		p += vsize;
+		*/
 
 		// if any one of them is overheating, then turn off
 		// spiders on ourselves (and thus the full cluster)
-		for ( long k = 0 ; k < 4 ; k++ )
-			if ( h->m_hdtemps[k] > g_conf.m_maxHardDriveTemp )
+		for ( int32_t k = 0 ; k < 4 ; k++ )
+			if ( h->m_pingInfo.m_hdtemps[k] > 
+			     g_conf.m_maxHardDriveTemp )
 				g_conf.m_spideringEnabled = 0;
 			
 
@@ -912,30 +1050,77 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 		// . 4 means done repairing and ready to exit repair mode,
 		//   but waiting for other hosts to be mode 4 or 0 before
 		//   it can exit, too, and go back to mode 0
+		/*
 		char mode = request[8];
 		h->m_kernelErrors = request[9];
+		*/
+		char mode = h->m_pingInfo.m_repairMode;
+
 		//if ( h->m_kernelErrors ){
 		//char *xx = NULL; *xx = 0;
 		//}
 		
 		// set his repair mode in the hosts table
-		if ( h ) {
-			// if his mode is 2 he is ready to start repairing
-			// because he has stopped all spiders and titledb
-			// merges from happening. if he just entered mode
-			// 2 now, check to see if all hosts are in mode 2 now.
-			char oldMode = h->m_repairMode;
-			// update his repair mode
-			h->m_repairMode = mode;
-			// . get the MIN repair mode of all hosts
-			// . expensive, so only do if a host changes modes
-			if ( oldMode != mode                    || 
-			     g_pingServer.m_minRepairMode == -1   )
-				g_pingServer.setMinRepairMode ( h );
-		}
+		//if ( h ) {
+		// if his mode is 2 he is ready to start repairing
+		// because he has stopped all spiders and titledb
+		// merges from happening. if he just entered mode
+		// 2 now, check to see if all hosts are in mode 2 now.
+		char oldMode = h->m_repairMode;
+		// update his repair mode
+		h->m_repairMode = mode;
+		// . get the MIN repair mode of all hosts
+		// . expensive, so only do if a host changes modes
+		if ( oldMode != mode                    || 
+		     g_pingServer.m_minRepairMode == -1   )
+			g_pingServer.setMinRepairMode ( h );
+		//}
 		// make it a normal ping now
 		requestSize = 8;
 	}
+
+	PingServer *ps = &g_pingServer;
+	ps->m_numHostsWithForeignRecs = 0;
+	ps->m_numHostsDead = 0;
+	ps->m_hostsConfInDisagreement = false;
+	ps->m_hostsConfInAgreement = false;
+
+
+	//
+	// do all hosts have the same hosts.conf????
+	//
+	// if some hosts are dead then we will not set either flag.
+	//
+	// scan all grunts for agreement. do this line once per sec?
+	//
+	int32_t agree = 0;
+	int32_t i; for ( i = 0 ; i < g_hostdb.getNumGrunts() ; i++ ) {
+		Host *h = &g_hostdb.m_hosts[i];			
+
+		if ( h->m_pingInfo.m_flags & PFLAG_FOREIGNRECS )
+			ps->m_numHostsWithForeignRecs++;
+
+		if ( g_hostdb.isDead ( h ) )
+			ps->m_numHostsDead++;
+
+		// skip if not received yet
+		if ( ! h->m_pingInfo.m_hostsConfCRC ) continue;
+		// badness?
+		if ( h->m_pingInfo.m_hostsConfCRC != g_hostdb.m_crc ) {
+			ps->m_hostsConfInDisagreement = true;
+			break;
+		}
+		// count towards agreement
+		agree++;
+	}
+
+	// iff all in agreement, set this flag
+	if ( agree == g_hostdb.getNumGrunts() )
+		ps->m_hostsConfInAgreement = true;
+			
+
+
+
 
 	// if request is 5 bytes, must be a host telling us he's shutting down
 	if ( requestSize == 5 ) {
@@ -945,7 +1130,7 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 		if ( h ) {
 			//h->m_ping        = g_conf.m_deadHostTimeout + 1;
 			//h->m_pingShotgun = g_conf.m_deadHostTimeout + 1;
-			long deadTime = g_conf.m_deadHostTimeout + 1;
+			int32_t deadTime = g_conf.m_deadHostTimeout + 1;
 			updatePingTime ( h , &h->m_ping        , deadTime );
 			updatePingTime ( h , &h->m_pingShotgun , deadTime );
 			// don't email admin if sendEmailAlert is false
@@ -973,20 +1158,20 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 	// . this was "0", but now we include what the ping was
 	else if ( requestSize == 4 ) {
 		// get the ping time
-		long ping = *(long *)request;
+		int32_t ping = *(int32_t *)request;
 		// store it
 		g_pingServer.m_currentPing = ping;
 		// should we update the clock?
 		bool setClock = true;
 		// . add 1ms DRIFT for every hour since last update
 		// . use local clock time only
-		long nowLocal = getTime();
+		int32_t nowLocal = getTime();
 		// how many seconds since we last updated our clock?
-		long delta    = nowLocal - g_pingServer.m_bestPingDate;
+		int32_t delta    = nowLocal - g_pingServer.m_bestPingDate;
 		// drift it 1ms every 5 seconds, that seems somewhat typical
-		long drift    = delta / 5;
+		int32_t drift    = delta / 5;
 		// get best "drifted" ping, "dping"
-		long dping = g_pingServer.m_bestPing + drift;
+		int32_t dping = g_pingServer.m_bestPing + drift;
 		// no overflowing
 		if ( dping < g_pingServer.m_bestPing ) dping = 0x7fffffff;
 		// if this is our first time
@@ -1007,15 +1192,15 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 		// only commit sender's time if from hostId #0
 		if ( setClock ) {
 			// what time is it now?
-			long long nowmsLocal=gettimeofdayInMillisecondsLocal();
+			int64_t nowmsLocal=gettimeofdayInMillisecondsLocal();
 			// log it
-			log(LOG_DEBUG,"admin: Got ping of %li ms. Updating "
-			     "clock. drift=%li delta=%li s_deltaTime=%llims "
-			     "nowmsLocal=%llims",
-			     (long)g_pingServer.m_currentPing,drift,delta,
+			log(LOG_DEBUG,"admin: Got ping of %"INT32" ms. Updating "
+			     "clock. drift=%"INT32" delta=%"INT32" s_deltaTime=%"INT64"ms "
+			     "nowmsLocal=%"INT64"ms",
+			     (int32_t)g_pingServer.m_currentPing,drift,delta,
 			     s_deltaTime,nowmsLocal);
 			// what should the new time be? (local mobo time)
-			long long newTime = s_deltaTime + nowmsLocal;
+			int64_t newTime = s_deltaTime + nowmsLocal;
 			// update clock
 			settimeofdayInMillisecondsGlobal ( newTime );
 			// time stamps
@@ -1032,27 +1217,27 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 		// only record sender's time if from hostId #0
 		if ( h && h->m_hostId == 0 && !h->m_isProxy) {
 			// what time is it now?
-			long long nowmsLocal=gettimeofdayInMillisecondsLocal();
+			int64_t nowmsLocal=gettimeofdayInMillisecondsLocal();
 			// . seems these servers drift by 1 ms every 5 secs
 			// . or that is about 17 seconds a day
 			// . we do NOT know how accurate host #0's supplied
 			//   time is because the request may have been delayed
-			log(LOG_DEBUG,"admin: host #0 time is %lli ms and "
-			    "our local time is %lli ms, delta=%lli ms",
-			    *(long long *)request,nowmsLocal ,
-			    *(long long *)request - nowmsLocal );
+			log(LOG_DEBUG,"admin: host #0 time is %"INT64" ms and "
+			    "our local time is %"INT64" ms, delta=%"INT64" ms",
+			    *(int64_t *)request,nowmsLocal ,
+			    *(int64_t *)request - nowmsLocal );
 			// update s_delta in case host #0 sends us a 
 			// request size of 4, telling us to sync up with this
-			s_deltaTime =*(long long *)request - nowmsLocal;
+			s_deltaTime =*(int64_t *)request - nowmsLocal;
 		}
                 // Reply to the proxy with a time stamp to sync with
                 /*
                 else if ( h && h->m_isProxy && g_hostdb.m_hostId == 0 &&
                           g_conf.m_timeSyncProxy ) {
-                        long long time = gettimeofdayInMillisecondsLocal();
+                        int64_t time = gettimeofdayInMillisecondsLocal();
                         // skip the syncstatus byte and write the time
-                        *(long long *)(reply+1) = time;
-                        replySize = sizeof(long long);
+                        *(int64_t *)(reply+1) = time;
+                        replySize = sizeof(int64_t);
                 }
                 */
 		// send back a 1 byte msg with our sync status now
@@ -1067,11 +1252,14 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 	}
 	// a tap request -- to store the sync point in the sync file
 	//else if ( requestSize == 9 )
-	//	g_sync.addOp ( OP_SYNCPT , "" , *(long long *)request );
+	//	g_sync.addOp ( OP_SYNCPT , "" , *(int64_t *)request );
 	// otherwise, unknown request size
-	else 
+	else {
 		log(LOG_LOGIC,"net: pingserver: Unknown request size of "
-		    "%li bytes.", requestSize);
+		    "%"INT32" bytes. You are probably running a different gb "
+		    "version on this host. check the hosts table for "
+		    "version info.", requestSize);
+	}
 	// always send back an empty reply
 	g_udpServer.sendReply_ass ( reply     , // msg
 				     replySize , // msgSize
@@ -1092,8 +1280,8 @@ void handleRequest11 ( UdpSlot *slot , long niceness ) {
 	// . add up each hosts urls indexed
 	if ( ! g_conf.m_testParserEnabled     ) return;
 	if ( g_hostdb.m_myHost->m_hostId != 0 ) return;
-	long total = 0;
-	for ( long i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
+	int32_t total = 0;
+	for ( int32_t i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
 		Host *h = &g_hostdb.m_hosts[i];
 		total += h->m_urlsIndexed;
 	}
@@ -1117,14 +1305,14 @@ void PingServer::setMinRepairMode ( Host *hhh ) {
 	if ( m_minRepairModeBesides0     ==  -1 ) returnNow = false;
 	if ( returnNow ) return;
 	// count the mins
-	long  min   = -1;
-	long  max   = -1;
-	long  min0  = -1;
+	int32_t  min   = -1;
+	int32_t  max   = -1;
+	int32_t  min0  = -1;
 	Host *minh  = NULL;
 	Host *maxh  = NULL;
 	Host *minh0 = NULL;
 	// scan to find new min
-	for ( long i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
+	for ( int32_t i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
 		// count if not dead
 		Host *h = &g_hostdb.m_hosts[i];
 		// . if it is us, the repairMode is not updated because we
@@ -1134,7 +1322,7 @@ void PingServer::setMinRepairMode ( Host *hhh ) {
 		//   PingServer.h
 		if ( h == g_hostdb.m_myHost ) continue;
 		// get repair mode
-		long repairMode = h->m_repairMode;
+		int32_t repairMode = h->m_repairMode;
 		// is it a min?
 		if ( repairMode < min || min == -1 ) {
 			// we got a new minner
@@ -1190,15 +1378,15 @@ void PingServer::pingNextHost ( ) {
  skip:
 	// . don't use more than 32       UdpSlots for pinging
 	// . don't use more than numHosts UdpSlots for pinging
-	long n = g_hostdb.getNumHosts();
+	int32_t n = g_hostdb.getNumHosts();
         if ( m_pingProxy )
                 n = g_hostdb.getNumProxy();
-        long max = n;
+        int32_t max = n;
 	if ( n > 32 ) max = 32;
 
 	if ( s_outstandingPings >= max ) return;
 	// the next hostid to ping
-	static long s_nextHostId = 0;
+	static int32_t s_nextHostId = 0;
 	// cycle through pinging different hosts
  	// get next host to ping
 	if ( s_nextHostId >= n ) {
@@ -1246,19 +1434,19 @@ bool PingServer::sendEmail ( Host *h            ,
 			     bool  kernelErrors , 
 			     bool  parmChanged  ,
 			     bool  forceIt      ,
-			     long  mxIP         ) { // 0 means none
+			     int32_t  mxIP         ) { // 0 means none
 	// clear this
 	g_errno = 0;
 	// not if we have outstanding requests
 	if ( m_numReplies2 < m_numRequests2 ) {
-		log("net: Email not sent since there are %li outstanding "
+		log("net: Email not sent since there are %"INT32" outstanding "
 		    "replies.",m_numReplies2 - m_numRequests2);
 		return true;
 	}
 	// throttle the oom sends
 	if ( oom ) {
-		static long s_lastOOMTime = 0;
-		long now = getTimeLocal();
+		static int32_t s_lastOOMTime = 0;
+		int32_t now = getTimeLocal();
 		// space 15 minutes apart
 		if ( now - s_lastOOMTime < 15*60 ) return true;
 		// set time
@@ -1273,9 +1461,9 @@ bool PingServer::sendEmail ( Host *h            ,
 		// . this is useful cuz it might hint at a down link
 		if ( h != NULL && h->m_emailCode == 0 ) {
 			h->m_emailCode = 1;
-			//log("net: Host #%li is dead. Has not responded to "
-			//    "ping in %li ms.",h->m_hostId,
-			//    (long)g_conf.m_deadHostTimeout);
+			//log("net: Host #%"INT32" is dead. Has not responded to "
+			//    "ping in %"INT32" ms.",h->m_hostId,
+			//    (int32_t)g_conf.m_deadHostTimeout);
 		}
 		return true;
 	}
@@ -1302,11 +1490,11 @@ bool PingServer::sendEmail ( Host *h            ,
 		//  we have a host.
 		// . are we the designated host to send the email alert?
 		// . our hostid must be the next alive hostId
-		long dhid = h->m_hostId;
+		int32_t dhid = h->m_hostId;
 		Host *dh = g_hostdb.getHost ( dhid );
 		Host *origdh = dh;
 		//while ( dh && dh->m_ping >= g_conf.m_deadHostTimeout ) {
-		long totalCount = 0;
+		int32_t totalCount = 0;
 		while ( dh && ( g_hostdb.isDead ( dh ) || dh == origdh ) ) {
 			if ( ++dhid >= g_hostdb.getNumHosts() ) dhid = 0;
 			dh = g_hostdb.getHost ( dhid );
@@ -1328,28 +1516,28 @@ bool PingServer::sendEmail ( Host *h            ,
 		if ( h->m_isProxy ) nm = "Proxy";
 		// note it in the log
 		if ( oom ) 
-			log("net: %s %s #%li is out of mem for %li ms. "
+			log("net: %s %s #%"INT32" is out of mem for %"INT32" ms. "
 			    "Sending email alert.",h->m_hostname,nm,
 			    h->m_hostId,
-			    (long)g_conf.m_sendEmailTimeout);
+			    (int32_t)g_conf.m_sendEmailTimeout);
 		else if ( kernelErrors )
-			log("net: %s %s #%li has an error in the kernel. "
+			log("net: %s %s #%"INT32" has an error in the kernel. "
 			    "Sending email alert.",h->m_hostname,nm,
 			    h->m_hostId);
 		else
-			log("net: %s %s #%li is dead. Has not responded to "
-			    "ping in %li ms. Sending email alert.",
+			log("net: %s %s #%"INT32" is dead. Has not responded to "
+			    "ping in %"INT32" ms. Sending email alert.",
 			    h->m_hostname,nm,h->m_hostId,
-			    (long)g_conf.m_sendEmailTimeout);
+			    (int32_t)g_conf.m_sendEmailTimeout);
 		// . make the msg
 		// . put host0 ip in ()'s so we know what network it was
 		Host *h0 = g_hostdb.getHost ( 0 );
-		long ip0 = 0;
+		int32_t ip0 = 0;
 		if ( h0 ) ip0 = h0->m_ip;
 		char *desc = "dead";
 		if ( oom ) desc = "out of memory";
 		else if ( kernelErrors ) desc = "having kernel errors";
-		sprintf ( msgbuf , "%s %s %li is %s. cluster=%s (%s)",  
+		sprintf ( msgbuf , "%s %s %"INT32" is %s. cluster=%s (%s)",  
 			  h->m_hostname,nm,
 			  h->m_hostId, desc, g_conf.m_clusterName,iptoa(ip0));
 		errmsg = msgbuf;
@@ -1387,17 +1575,17 @@ bool PingServer::sendEmail ( Host *h            ,
 	if ( delay && h && sendToAdmin ) {
 
 		/*
-		long deaHr,deaMin,debHr,debMin;
+		int32_t deaHr,deaMin,debHr,debMin;
 		char hr[3],min[3];
 		hr[2] = '\0';
 		min[2] = '\0';
-		memcpy ( hr, g_conf.m_delayEmailsAfter, 2 );
+		gbmemcpy ( hr, g_conf.m_delayEmailsAfter, 2 );
 		deaHr = atoi(hr);
-		memcpy ( min, g_conf.m_delayEmailsAfter + 3, 2 );
+		gbmemcpy ( min, g_conf.m_delayEmailsAfter + 3, 2 );
 		deaMin = atoi(min);
-		memcpy ( hr, g_conf.m_delayEmailsBefore, 2 );
+		gbmemcpy ( hr, g_conf.m_delayEmailsBefore, 2 );
 		debHr = atoi(hr);
-		memcpy ( min, g_conf.m_delayEmailsBefore + 3, 2 );
+		gbmemcpy ( min, g_conf.m_delayEmailsBefore + 3, 2 );
 		debMin = atoi(min);
 		//get the current time. use getTime() because
 		//then it is sync'ed with host 0's time.
@@ -1411,8 +1599,8 @@ bool PingServer::sendEmail ( Host *h            ,
 		//    "host died",buf );
 		//tm struct has hours from 0-23
 
-		long tmHr = timeInfo->tm_hour;
-		long tmMin = timeInfo->tm_min;
+		int32_t tmHr = timeInfo->tm_hour;
+		int32_t tmMin = timeInfo->tm_min;
 		
 		bool delay = false;
 		
@@ -1439,10 +1627,10 @@ bool PingServer::sendEmail ( Host *h            ,
 		if ( delay ) {
 
 			//check if the hosts twins are dead too
-			long numTwins = 0;
-			Host *hosts = g_hostdb.getGroup( h->m_groupId, 
+			int32_t numTwins = 0;
+			Host *hosts = g_hostdb.getShard( h->m_shardNum, 
 							 &numTwins );
-			long i = 0;
+			int32_t i = 0;
 			while ( i < numTwins ){
 				if ( !g_hostdb.isDead ( hosts[i].m_hostId ) )
 					break;
@@ -1470,10 +1658,10 @@ bool PingServer::sendEmail ( Host *h            ,
 				diffTime = (60 * 60 * 24 ) + diffTime;
 
 			log( LOG_WARN,"net: pingserver: Delay non critical "
-			     "email alerts on. Trying to send email after %li "
-			     "seconds",(long) diffTime );
+			     "email alerts on. Trying to send email after %"INT32" "
+			     "seconds",(int32_t) diffTime );
 
-			long wait = (long)diffTime * 1000 ;//ms
+			int32_t wait = (int32_t)diffTime * 1000 ;//ms
 			// wake up after so many seconds
 			g_loop.registerSleepCallback( wait, h,
 						      emailSleepWrapper );
@@ -1696,7 +1884,7 @@ bool pageTMobile ( Host *h , char *errmsg) {
 	// 	log("EMAIL SENT %s!!!!!!!!!!!!!!!",errmsg);
 	// 	return true;
 	// for debug without actually wasting our cell phone instant messages
-	//log("EMAIL SENT hid=%li!!!!!!!!!!!!!!!",h->m_hostId);
+	//log("EMAIL SENT hid=%"INT32"!!!!!!!!!!!!!!!",h->m_hostId);
 	//gotDocWrapper ( h , NULL );
 	//return true;
 	// looks like TcpServer won't let us use a static sendBuf
@@ -1708,8 +1896,8 @@ bool pageTMobile ( Host *h , char *errmsg) {
 
 	// bail on malloc error
 	if ( ! buf ) {
-		log("net: Could not allocate %li bytes to send email "
-		    "to mobile." , (long)PAGER_BUF_SIZE);
+		log("net: Could not allocate %"INT32" bytes to send email "
+		    "to mobile." , (int32_t)PAGER_BUF_SIZE);
 		g_pingServer.m_numReplies++;
 		return true;
 	}
@@ -1747,7 +1935,7 @@ bool pageTMobile ( Host *h , char *errmsg) {
 		  "text=");
 	p += gbstrlen ( p );
 	// append the err msg, but convert spaces to +'s
-	long i;
+	int32_t i;
 	for ( i = 0 ; errmsg[i] && p + 4 < pend ; i++ ) {
 		if      ( errmsg[i] == ' ' ) 
 			*p++ = '+';
@@ -1761,11 +1949,11 @@ bool pageTMobile ( Host *h , char *errmsg) {
 			*p++ = errmsg[i];
 	}
 	*p = '\0';
-	long bufLen = p - buf;
+	int32_t bufLen = p - buf;
 	// replace xxx
 	char *s = strstr ( buf , "xxx" );
 	char *t = strstr ( buf , "\r\n\r\n" ) + 4;
-	long clen = bufLen - ( t - buf );
+	int32_t clen = bufLen - ( t - buf );
 	sprintf ( s , "%3li" , clen );
 	s [ 3 ] = '\r';
 
@@ -1808,7 +1996,7 @@ bool pageTMobile ( Host *h , char *errmsg) {
 bool pageAlltel ( Host *h , char *errmsg , char *num ) {
 
 	// for debug without actually wasting our cell phone instant messages
-	//log("EMAIL SENT hid=%li!!!!!!!!!!!!!!!",h->m_hostId);
+	//log("EMAIL SENT hid=%"INT32"!!!!!!!!!!!!!!!",h->m_hostId);
 	//gotDocWrapper ( h , NULL );
 	//return true;
 	// looks like TcpServer won't let us use a static sendBuf
@@ -1819,7 +2007,7 @@ bool pageAlltel ( Host *h , char *errmsg , char *num ) {
 	char *buf = (char *) mmalloc ( PAGER_BUF_SIZE , "PingServer" );
 	// bail on malloc error
 	if ( ! buf ) {
-		log("net: Could not allocate %li bytes to send email "
+		log("net: Could not allocate %"INT32" bytes to send email "
 		    "to alltel." , PAGER_BUF_SIZE);
 		g_pingServer.m_numReplies++;
 		return true;
@@ -1861,7 +2049,7 @@ bool pageAlltel ( Host *h , char *errmsg , char *num ) {
 		  host , num );
 	p += gbstrlen ( p );
 	// append the err msg, but convert spaces to +'s
-	long i;
+	int32_t i;
 	for ( i = 0 ; errmsg[i] && p + 4 < pend ; i++ ) {
 		if      ( errmsg[i] == ' ' ) 
 			*p++ = '+';
@@ -1875,11 +2063,11 @@ bool pageAlltel ( Host *h , char *errmsg , char *num ) {
 			*p++ = errmsg[i];
 	}
 	*p = '\0';
-	long bufLen = p - buf;
+	int32_t bufLen = p - buf;
 	// replace xxx
 	char *s = strstr ( buf , "xxx" );
 	char *t = strstr ( buf , "\r\n\r\n" ) + 4;
-	long clen = bufLen - ( t - buf );
+	int32_t clen = bufLen - ( t - buf );
 	sprintf ( s , "%3li" , clen );
 	s [ 3 ] = '\r';
 
@@ -1916,7 +2104,7 @@ bool pageSprintPCS ( Host *h , char *errmsg , char *num) {
 	//char *num  = "2813004108"; // partap
 
 	// for debug without actually wasting our cell phone instant messages
-	//log("EMAIL SENT hid=%li!!!!!!!!!!!!!!!",h->m_hostId);
+	//log("EMAIL SENT hid=%"INT32"!!!!!!!!!!!!!!!",h->m_hostId);
 	//gotDocWrapper ( h , NULL );
 	//return true;
 	// looks like TcpServer won't let us use a static sendBuf
@@ -1928,7 +2116,7 @@ bool pageSprintPCS ( Host *h , char *errmsg , char *num) {
 	char *buf = (char *) mmalloc ( PAGER_BUF_SIZE , "PingServer" );
 	// bail on malloc error
 	if ( ! buf ) {
-		log("net: Could not allocate %li bytes to send email "
+		log("net: Could not allocate %"INT32" bytes to send email "
 		    "to sprint pcs." , PAGER_BUF_SIZE);
 		g_pingServer.m_numReplies++;
 		return true;
@@ -1964,14 +2152,14 @@ bool pageSprintPCS ( Host *h , char *errmsg , char *num) {
 		  // post data
 		  "randomToken=&"
 		  "phoneNumber=%s&" // phone number
-		  //"characters=%li&"
+		  //"characters=%"INT32"&"
 		  //"characters=160&"
 		  //"callBackNumber=&"
 		  "message=" ,
-		  host , num );//, (long)160-gbstrlen(errmsg) );
+		  host , num );//, (int32_t)160-gbstrlen(errmsg) );
 	p += gbstrlen ( p );
 	// append the err msg, but convert spaces to +'s
-	long i;
+	int32_t i;
 	for ( i = 0 ; errmsg[i] && p + 4 < pend ; i++ ) {
 		if      ( errmsg[i] == ' ' ) 
 			*p++ = '+';
@@ -1985,7 +2173,7 @@ bool pageSprintPCS ( Host *h , char *errmsg , char *num) {
 			*p++ = errmsg[i];
 	}
 	*p = '\0';
-	//long bufLen = p - buf;
+	//int32_t bufLen = p - buf;
 
 	// gotta get the cookie
 	Url url;
@@ -2030,7 +2218,7 @@ bool pageSprintPCS2 ( void *state , TcpSocket *s) {
 	char *ip   = "65.174.43.73";
 
 	char *buf = (char *)state;
-	long  bufLen = gbstrlen(buf);
+	int32_t  bufLen = gbstrlen(buf);
 
 	char *p    = buf;
 	char *pend = p + bufLen;
@@ -2054,7 +2242,7 @@ bool pageSprintPCS2 ( void *state , TcpSocket *s) {
 	HttpMime mime;
 	mime.set ( s->m_readBuf  , s->m_readOffset , NULL );
 	char *cookie = mime.getCookie ( );
-	long  cookieLen = mime.getCookieLen ();
+	int32_t  cookieLen = mime.getCookieLen ();
 	bufLen += cookieLen;
 
 	if ( ! cookie ) {
@@ -2071,14 +2259,14 @@ bool pageSprintPCS2 ( void *state , TcpSocket *s) {
 	if ( ! ss ) { char *xx = NULL; *xx = 0; }
 	ss += 8; // points to right after the space
 	// insert the cookie
-	memcpy ( ss+cookieLen , ss , pend - ss );
-	memcpy ( ss , cookie , cookieLen );
+	gbmemcpy ( ss+cookieLen , ss , pend - ss );
+	gbmemcpy ( ss , cookie , cookieLen );
 	pend += cookieLen;
 
 	// replace xxx
 	char *sx = strstr ( buf , "xxx" );
 	char *t = strstr ( buf , "\r\n\r\n" ) + 4;
-	long clen = bufLen - ( t - buf );
+	int32_t clen = bufLen - ( t - buf );
 	sprintf ( sx , "%3li" , clen );
 	sx [ 3 ] = '\r';
 
@@ -2109,7 +2297,7 @@ bool pageSprintPCS2 ( void *state , TcpSocket *s) {
 #endif
 
 // a bit of a hack for monitor.cpp
-//long g_emailMX1IPBackUp = 0;
+//int32_t g_emailMX1IPBackUp = 0;
 
 bool sendAdminEmail ( Host  *h,
 		      char  *fromAddress,
@@ -2137,7 +2325,7 @@ bool sendAdminEmail ( Host  *h,
 	// quit
 	p += sprintf(p, "\r\n.\r\nQUIT\r\n");
 	// get the length
-	long buffLen = (p - buf);
+	int32_t buffLen = (p - buf);
 	// send the message
 	TcpServer *ts = g_httpServer.getTcp();
 	log ( LOG_WARN, "PingServer: Sending email to sysadmin:\n %s", buf );
@@ -2176,7 +2364,7 @@ void gotDocWrapper ( void *state , TcpSocket *s ) {
 	g_pingServer.m_numReplies2++;
 	if ( g_pingServer.m_numReplies2 > g_pingServer.m_maxRequests2 ) {
 		log(LOG_LOGIC,"net: too many replies received. "
-		    "requests:%li replies:%li maxrequests:%li",
+		    "requests:%"INT32" replies:%"INT32" maxrequests:%"INT32"",
 		    g_pingServer.m_numRequests2, 
 		    g_pingServer.m_numReplies2, 
 		    g_pingServer.m_maxRequests2);
@@ -2191,10 +2379,10 @@ void gotDocWrapper ( void *state , TcpSocket *s ) {
 		if(h) {
 			log("net: Had error sending email to mobile for dead "
 			    "hostId "
-			    "#%li: %s.", h->m_hostId,mstrerror(g_errno));
+			    "#%"INT32": %s.", h->m_hostId,mstrerror(g_errno));
 		} else {
 			log("net: Had error sending email to mobile for "
-			    "long latency: %s.", mstrerror(g_errno));
+			    "int32_t latency: %s.", mstrerror(g_errno));
 		}
 		// mark as 0 on error to try sending again later
 		//h->m_emailCode = 0; 
@@ -2204,14 +2392,14 @@ void gotDocWrapper ( void *state , TcpSocket *s ) {
 	}
 	// log it
 	if(h)
-		log("net: Email sent successfully for dead host #%li.", 
+		log("net: Email sent successfully for dead host #%"INT32".", 
 		    h->m_hostId);
 	else 
-		log("net: Email sent successfully for long latency.");
+		log("net: Email sent successfully for int32_t latency.");
 	// . show the reply
 	// . seems to crash if we log the read buffer... no \0?
 	if ( s && s->m_readBuf )
-		log("net: Got messaging server reply #%li.\n%s",
+		log("net: Got messaging server reply #%"INT32".\n%s",
 		    g_pingServer.m_numReplies2,s->m_readBuf );
 	// otherwise, success
 	if(h) {
@@ -2248,15 +2436,15 @@ bool PingServer::broadcastShutdownNotes ( bool    sendEmailAlert          ,
 	m_broadcastCallback = callback;
 	// use this buffer
 	static char s_buf [5];
-	*(long *)s_buf = g_hostdb.m_hostId;
+	*(int32_t *)s_buf = g_hostdb.m_hostId;
 	// followed by sendEmailAlert
 	s_buf[4] = (char)sendEmailAlert;
 
-	long np = g_hostdb.getNumProxy();
+	int32_t np = g_hostdb.getNumProxy();
 	// do not send to proxies if we are a proxy
 	if ( g_hostdb.m_myHost->m_isProxy ) np = 0;
 	// sent to proxy hosts too so they don't send to us
-	for ( long i = 0 ; i < np ; i++ ) {
+	for ( int32_t i = 0 ; i < np ; i++ ) {
 		// get host
 		Host *h = g_hostdb.getProxy(i);
 		// skip ourselves
@@ -2289,7 +2477,7 @@ bool PingServer::broadcastShutdownNotes ( bool    sendEmailAlert          ,
 
 
 	// send a high priority msg to each host in network, except us
-	for ( long i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
+	for ( int32_t i = 0 ; i < g_hostdb.getNumHosts() ; i++ ) {
 		// get host
 		Host *h = &g_hostdb.m_hosts[i];
 		// skip ourselves
@@ -2299,7 +2487,7 @@ bool PingServer::broadcastShutdownNotes ( bool    sendEmailAlert          ,
 		// request will be freed by UdpServer
 		//char *r = (char *) mmalloc ( 4 , "PingServer" );
 		//if ( ! r ) return true;
-		//memcpy ( r , (char *)(&h->m_hostId) , 4 );
+		//gbmemcpy ( r , (char *)(&h->m_hostId) , 4 );
 		// send it right now
 		if ( g_udpServer.sendRequest ( s_buf         ,
 						5             , // rqstSz
@@ -2355,9 +2543,9 @@ void gotReplyWrapperP2 ( void *state , UdpSlot *slot ) {
 // all "sync points" are from host #0's clock.
 
 // ensure not too many sync point store requests off at once
-static long s_outstandingTaps = 0;
+static int32_t s_outstandingTaps = 0;
 static char s_lastSyncPoint [ 9 ];
-static long s_nextTapHostId ;
+static int32_t s_nextTapHostId ;
 
 static void tapLoop ( ) ;
 static void gotTapReplyWrapper ( void *state , UdpSlot *slot ) ;
@@ -2370,7 +2558,7 @@ void sleepWrapper10 ( int fd , void *state ) {
 		return;
 	}
 	// request is 9 bytes to distinguish from 8-byte requests
-	long long stamp = gettimeofdayInMilliseconds();
+	int64_t stamp = gettimeofdayInMilliseconds();
 	// . keep incrementing this if already used to avoid repeat stamps
 	// . should be extremely rare
 	// . even with this we can still have repeat stamps if we are not
@@ -2378,7 +2566,7 @@ void sleepWrapper10 ( int fd , void *state ) {
 	// . -1 is reserved for meaning no stamp (see Msg0.h)
 	//while ( g_sync.hasStamp ( stamp ) || stamp == -1 ) stamp++;
 	// save it for distributing
-	*(long long *) s_lastSyncPoint = stamp;
+	*(int64_t *) s_lastSyncPoint = stamp;
 	// reset loop parms
 	s_nextTapHostId = 0;
 	// do the tap loop
@@ -2388,12 +2576,12 @@ void sleepWrapper10 ( int fd , void *state ) {
 void tapLoop ( ) {
 	// . don't use more than 16       UdpSlots for tapping
 	// . don't use more than numHosts UdpSlots for tapping
-	long max = g_hostdb.getNumHosts();
+	int32_t max = g_hostdb.getNumHosts();
 	if ( max > 16 ) max = 16;
  loop:
 	if ( s_outstandingTaps >= max ) return;
 	// cycle through pinging different hosts
-	long n = g_hostdb.getNumHosts();
+	int32_t n = g_hostdb.getNumHosts();
  	// if done sending requests then just return
 	if ( s_nextTapHostId >= n ) return;
 	// otherwise, tap this guy
@@ -2416,7 +2604,7 @@ void gotTapReplyWrapper ( void *state , UdpSlot *slot ) {
 }
 
 // ping host #i
-void PingServer::tapHost ( long hostId ) {
+void PingServer::tapHost ( int32_t hostId ) {
 	// don't ping on interface machines
 	if ( g_conf.m_interfaceMachine ) return;
 	// don't tap ourselves
@@ -2451,7 +2639,7 @@ void PingServer::tapHost ( long hostId ) {
 					h->m_port       ,
 					h->m_hostId     ,
 					NULL            ,
-					(void *)h->m_hostId, // callback state
+				       (void *)(PTRTYPE)h->m_hostId,// cb state
 					gotTapReplyWrapper ,
 					30              , // timeout
 					1000            , // backoff
@@ -2465,7 +2653,7 @@ void PingServer::tapHost ( long hostId ) {
 	// consider it out of progress
 	//h->m_inTapProgress = false;
 	// had an error
-	log("net: Had error sending sync point request to host #%li: %s.", 
+	log("net: Had error sending sync point request to host #%"INT32": %s.", 
 	    h->m_hostId,mstrerror(g_errno) );
 	// reset it cuz it's not a showstopper
 	g_errno = 0;
@@ -2479,7 +2667,7 @@ void PingServer::tapHost ( long hostId ) {
 // . returns true if you don't have to wait... stamp happened immediately
 // . sets g_errno on any error, regardless of whether true or false was returnd
 /*
-void PingServer::stampHost ( long  hostId , long tripTime , bool timedOut ) {
+void PingServer::stampHost ( int32_t  hostId , int32_t tripTime , bool timedOut ) {
 	// hostId of -1 means unknown, so we can't stamp it
 	if ( hostId ==         -1 ) return;
 	if ( hostId >= g_hostdb.getNumHosts() ) return;
@@ -2496,7 +2684,7 @@ void PingServer::stampHost ( long  hostId , long tripTime , bool timedOut ) {
 	// TODO: do we need this?
 	// . don't update this host if this new ping time is < 10% different
 	//   than the ping time we have recorded now
-	//	long diff = newPing - h->m_pingAvg;
+	//	int32_t diff = newPing - h->m_pingAvg;
 	//	if ( diff < 0 ) diff *= -1;
 	//	if ( ( 100 * diff ) / h->m_pingAvg < 10 ) return true;
 
@@ -2504,17 +2692,17 @@ void PingServer::stampHost ( long  hostId , long tripTime , bool timedOut ) {
 	// . we use the avg ping time to select fast hosts for querying
 	// . we use the std. dev. to know when to re-send datagrams
 	// shift the 5-ping window and insert the new ping
-        for ( long i = 0 ; i < 3 ; i++ ) h->m_pings[i] = h->m_pings[i+1];
+        for ( int32_t i = 0 ; i < 3 ; i++ ) h->m_pings[i] = h->m_pings[i+1];
 	h->m_pings[3] = tripTime; // our latest ping
 	// compute the avg
-	long avg = 0;
-        for ( long i = 0 ; i < 4 ; i++ ) avg += h->m_pings[i];
+	int32_t avg = 0;
+        for ( int32_t i = 0 ; i < 4 ; i++ ) avg += h->m_pings[i];
 	avg /= 4;
 	h->m_pingAvg = avg;
 	// compute the std dev
-	long stdDev = 0;
-        for ( long i = 0 ; i < 4 ; i++ ) {
-		long diff = ( h->m_pings[i] - avg );
+	int32_t stdDev = 0;
+        for ( int32_t i = 0 ; i < 4 ; i++ ) {
+		int32_t diff = ( h->m_pings[i] - avg );
 		if ( diff < 0 ) stdDev -= diff;
 		else            stdDev += diff;
 	}
@@ -2524,7 +2712,7 @@ void PingServer::stampHost ( long  hostId , long tripTime , bool timedOut ) {
 */
 
 /*
-void PingServer::getTimes ( long hostId , long *avg , long *stdDev ) {
+void PingServer::getTimes ( int32_t hostId , int32_t *avg , int32_t *stdDev ) {
 	// make defaults (right now for dns server only)
 	*avg    = 5000; // milliseconds = 5 seconds
 	*stdDev =  500;
@@ -2541,7 +2729,7 @@ void PingServer::getTimes ( long hostId , long *avg , long *stdDev ) {
 
 // if its status changes from dead to alive or vice versa, we have to
 // update g_hostdb.m_numHostsAlive. Dns.cpp and Msg17 will use this count
-void updatePingTime ( Host *h , long *pingPtr , long tripTime ) {
+void updatePingTime ( Host *h , int32_t *pingPtr , int32_t tripTime ) {
 
 	// sanity check
 	if ( pingPtr != &h->m_ping && pingPtr != &h->m_pingShotgun ) { 
@@ -2567,8 +2755,8 @@ void updatePingTime ( Host *h , long *pingPtr , long tripTime ) {
 		char *desc = "";
 		if ( pingPtr == &h->m_pingShotgun ) desc = " (shotgun)";
 		if ( tripTime > 50 )
-			log("gb: got new max ping time of %li for "
-			    "host #%li%s ",tripTime,h->m_hostId,desc);
+			log("gb: got new max ping time of %"INT32" for "
+			    "host #%"INT32"%s ",tripTime,h->m_hostId,desc);
 	}
 
 	// is it dead now?
@@ -2579,10 +2767,10 @@ void updatePingTime ( Host *h , long *pingPtr , long tripTime ) {
 
 	//if ( ! wasDead && isDead ) 
 	//	log("hey");
-	//logf(LOG_DEBUG,"ping: hostid %li wasDead=%li isDead=%li "
-	//               "numAlive=%li",
-	//     (long)h->m_hostId,(long)wasDead,(long)isDead,
-	//     (long)g_hostdb.m_numHostsAlive);
+	//logf(LOG_DEBUG,"ping: hostid %"INT32" wasDead=%"INT32" isDead=%"INT32" "
+	//               "numAlive=%"INT32"",
+	//     (int32_t)h->m_hostId,(int32_t)wasDead,(int32_t)isDead,
+	//     (int32_t)g_hostdb.m_numHostsAlive);
 
         if( h->m_isProxy ) {
                 // maintain m_numProxyAlive if there was a change in state
@@ -2609,13 +2797,19 @@ void updatePingTime ( Host *h , long *pingPtr , long tripTime ) {
 void checkKernelErrors( int fd, void *state ){
 	Host *me = g_hostdb.m_myHost;
 
-	long long st = gettimeofdayInMilliseconds();
+	int64_t st = gettimeofdayInMilliseconds();
 	char buf[4098];
 	// klogctl reads the last 4k lines of the kernel ring buffer
-	short bufLen = klogctl(3,buf,4096);
-	long long took = gettimeofdayInMilliseconds() - st;
-	if ( took > 1 )
-		log("db: klogctl took %lli ms to read %s",took, buf);
+	int16_t bufLen = klogctl(3,buf,4096);
+	int64_t took = gettimeofdayInMilliseconds() - st;
+	if ( took >= 3 ) {
+		int32_t len = bufLen;
+		if ( len > 200 ) len = 200;
+		char c = buf[len];
+		buf[len] = '\0';
+		log("db: klogctl took %"INT64" ms to read %s",took, buf);
+		buf[len] = c;
+	}
 
 	if ( bufLen < 0 ){
 		log ("db: klogctl returned error: %s",mstrerror(errno));
@@ -2638,7 +2832,7 @@ void checkKernelErrors( int fd, void *state ){
 	// sometimes the kernel ring buffer gets full and overwrites itself.
 	// in that case compare only latter half of the old buffer
 	char *oldKernBuf = s_kernelRingBuf;
-	long oldKernBufLen = s_kernelRingBufLen;
+	int32_t oldKernBufLen = s_kernelRingBufLen;
 	if ( s_kernelRingBufLen > 3 * 1024 ){
 		oldKernBuf = s_kernelRingBuf + s_kernelRingBufLen / 2;
 		oldKernBufLen = gbstrlen( oldKernBuf );
@@ -2652,19 +2846,19 @@ void checkKernelErrors( int fd, void *state ){
 	// we couldn't find the old buf in the new buf!
 	else 
 		changedBuf = buf;
-	long changedBufLen = gbstrlen(changedBuf);
+	int32_t changedBufLen = gbstrlen(changedBuf);
 	
 	// copy the new buf over to the old buf 
 	strcpy ( s_kernelRingBuf, buf );
 	s_kernelRingBufLen = bufLen;
 
-	static long s_lastCount = 0;
+	static int32_t s_lastCount = 0;
 
 	// since we do not know if this host has been fixed or not by looking
 	// at the kernel ring buffer, keep returning until someone clicks
 	// 'clear kernel error message' control in Master Controls. 
 	// but don't return before copying over the new buffer
-	if ( me->m_kernelErrors > 0 ) return;
+	if ( me->m_pingInfo.m_kernelErrors > 0 ) return;
 
 	// check if we match any error strings in master controls
 	char *p = NULL;
@@ -2690,14 +2884,14 @@ void checkKernelErrors( int fd, void *state ){
 	
 		if ( strncasestr ( p, gbstrlen(p) , "scsi" ) &&
 		     g_numIOErrors > s_lastCount ) {
-			me->m_kernelErrors = ME_IOERR;
+			me->m_pingInfo.m_kernelErrors = ME_IOERR;
 			s_lastCount = g_numIOErrors;
 		}
 		else if ( strncasestr ( p, gbstrlen(p), "100 mbps" ) )
-			me->m_kernelErrors = ME_100MBPS;
+			me->m_pingInfo.m_kernelErrors = ME_100MBPS;
 		// assume an I/O IO error here otherwise
 		else if ( g_numIOErrors > s_lastCount ) {
-			me->m_kernelErrors = ME_UNKNWN;
+			me->m_pingInfo.m_kernelErrors = ME_UNKNWN;
 			s_lastCount = g_numIOErrors;
 		}
 		log ( LOG_DEBUG,"PingServer: error message in "
@@ -2709,10 +2903,10 @@ void checkKernelErrors( int fd, void *state ){
 	return;
 }
 
-void PingServer::sendEmailMsg ( long *lastTimeStamp , char *msg ) {
+void PingServer::sendEmailMsg ( int32_t *lastTimeStamp , char *msg ) {
 	// leave if we already sent and alert within 5 mins
-	//static long s_lasttime = 0;
-	long now = getTimeGlobal();
+	//static int32_t s_lasttime = 0;
+	int32_t now = getTimeGlobalNoCore();
 	if ( now - *lastTimeStamp < 5*60 ) return;
 	// prepare msg to send
 	//Host *h0 = g_hostdb.getHost ( 0 );
@@ -2733,3 +2927,460 @@ void PingServer::sendEmailMsg ( long *lastTimeStamp , char *msg ) {
 	return;
 }
 
+/////////////////
+//
+// for sending email notifications to external addresses
+//
+///////////////////
+
+/*
+bool gotMxIp ( EmailInfo *ei ) ;
+
+void gotMxIpWrapper ( void *state , int32_t ip ) {
+	EmailInfo *ei = (EmailInfo *)state;
+	// i guess set it
+	ei->m_mxIp = ip;
+	// handle it
+	if ( ! gotMxIp ( ei ) ) return;
+	// did not block, call callback
+	ei->m_callback ( ei->m_state );
+}
+*/
+
+void doneSendingEmailWrapper ( void *state , TcpSocket *sock ) {
+	if ( g_errno )
+		log("crawlbot: error sending email = %s",mstrerror(g_errno));
+	// log the reply
+	if ( sock && sock->m_readBuf )
+		log("crawlbot: got socket reply=%s", sock->m_readBuf);
+	EmailInfo *ei = (EmailInfo *)state;
+	ei->m_callback ( ei->m_state );
+}
+
+
+// returns false if blocked, true otherwise
+bool sendEmail ( class EmailInfo *ei ) {
+
+	// this is often set from XmlDoc.cpp::indexDoc()
+	g_errno = 0;
+
+	char *to = ei->m_toAddress.getBufStart();
+	char *dom = strstr(to,"@");
+	if ( ! dom || ! dom[1] ) {
+		g_errno = EBADENGINEER;
+		log("email: missing @ sign in email %s",to);
+		return true;
+	}
+	// point to domain
+	dom++;
+	// ref that for printing HELO line
+	ei->m_dom = dom;
+
+	// just send it to a sendmail server which will forward it,
+	// because a lot of email servers don't like us connecting directly
+	// beause i think our IP address does not match that of our 
+	// MX ip for our domain? sendmail must be configured to allow
+	// forwarding if it receives an email from the IP of host #0
+	// in the cluster.
+	ei->m_mxIp = atoip(g_conf.m_sendmailIp);
+
+	/*
+	// prepend a special marker so Dns.cpp returns the mx record
+	ei->m_mxDomain.safePrintf("gbmxrec-%s",dom);
+
+	// get mx ip. returns false if would block.
+	if ( ! g_dns.getIp ( ei->m_mxDomain.getBufStart() ,
+			     ei->m_mxDomain.getLength() ,
+			     &ei->m_mxIp,
+			     ei ,
+			     gotMxIpWrapper ) )
+		return false;
+
+	return gotMxIp ( ei );
+}
+
+// returns false if blocked, true otherwise
+bool gotMxIp ( EmailInfo *ei ) {
+
+	// error?
+	if ( g_errno ) {
+		log("crawlbot: error getting MX IP to send email alert for "
+		    "%s = %s",
+		    ei->m_mxDomain.getBufStart(),
+		    mstrerror(g_errno));
+		return true;
+	}
+	*/
+
+	// wtf?
+	if ( ei->m_mxIp == 0 ) {
+		log("crawlbot: got bad MX ip of 0 for %s",
+		    ei->m_mxDomain.getBufStart());
+		return true;
+	}
+
+	// label alloc'd mem with gotmxip in case of mem leak
+	SafeBuf sb;//("gotmxip");
+	// helo line
+	sb.safePrintf("HELO %s\r\n",ei->m_dom);
+	// mail line
+	sb.safePrintf( "MAIL FROM:<%s>\r\n", ei->m_fromAddress.getBufStart());
+	// to line
+	sb.safePrintf( "RCPT TO:<%s>\r\n", ei->m_toAddress.getBufStart());
+	// data
+	sb.safePrintf( "DATA\r\n");
+	// body
+	sb.safePrintf( "To: %s\r\n", ei->m_toAddress.getBufStart());
+	sb.safePrintf( "Subject: %s\r\n",ei->m_subject.getBufStart());
+	// mime header must be separated from body by an extra \r\n
+	sb.safePrintf( "\r\n");
+	sb.safePrintf( "%s", ei->m_body.getBufStart() );
+	// quit
+	sb.safePrintf( "\r\n.\r\nQUIT\r\n\r\n");
+	// send the message
+	TcpServer *ts = g_httpServer.getTcp();
+	log ( LOG_WARN, "crawlbot: Sending email to %s (MX IP=%s):\n %s", 
+	      ei->m_toAddress.getBufStart(),
+	      iptoa(ei->m_mxIp),
+	      sb.getBufStart() );
+	// make a temp string
+	SafeBuf mxIpStr;
+	mxIpStr.safePrintf("%s",iptoa(ei->m_mxIp) );
+	if ( !ts->sendMsg ( mxIpStr.getBufStart(),
+			    mxIpStr.length(),
+			    25, // smtp (send mail transfer protocol) port
+			    sb.getBufStart(),
+			    sb.getCapacity(),
+			    sb.getLength(),
+			    sb.getLength(),
+			    ei,//NULL,//h,
+			    doneSendingEmailWrapper,
+			    60*1000,
+			    100*1024,
+			    100*1024 ) ) {
+		// tcpserver will free it, so prevent double free with detach
+		sb.detachBuf();
+		return false;
+	}
+	// error? if no error, it was a successful write and it done,
+	// otherwise we will want to free the sendbuf here so do not
+	// call detachBuf()
+	if ( ! g_errno )
+		// tcpserver will free it, so prevent double free with detach
+		sb.detachBuf();
+	// we did not block
+	return true;
+}
+
+
+static void gotMandrillReplyWrapper ( void *state , TcpSocket *s ) {
+	// why core here with s NULL
+	if ( ! s ) {
+		// crap seems like we do not retry so they will not get
+		// the notification... how to fix better?
+		log("email: failed to lookup mandrill ip. sock is null.");
+		g_errno = EBADIP;
+	}
+	else {
+		// log the mandril reply
+		log("email: got mandrill reply: %s",s->m_readBuf);
+	}
+	EmailInfo *ei = (EmailInfo *)state;
+	if ( ei->m_callback ) ei->m_callback ( ei->m_state );
+}
+
+
+// mailchimp http mail api
+bool sendEmailThroughMandrill ( class EmailInfo *ei ) {
+
+	// this is often set from XmlDoc.cpp::indexDoc()
+	g_errno = 0;
+
+	SafeBuf sb;
+
+	// then the message to send
+	sb.safePrintf(
+		  "POST /api/1.0/messages/send-template.json"
+		  " HTTP/1.0\r\n"
+		  "Accept: image/gif, image/x-xbitmap, image/jpeg, "
+		  "image/pjpeg, application/x-shockwave-flash, "
+		  "application/msword, */*\r\n"
+		  "Accept-Language: en-us\r\n"
+		  //"Content-Type: application/x-www-form-urlencoded\r\n"
+		  "Content-Type: application/json\r\n"
+		  //"Accept-Encoding: gzip, deflate\r\n"
+		  "User-Agent: Mozilla/4.0 "
+		  "(compatible; MSIE 6.0; Windows 98; Win 9x 4.90)\r\n"
+		  "Host: mandrillapp.com\r\n" // www.t-mobile.com
+		  "Content-Length: xxxx\r\n"
+		  //"Connection: Keep-Alive\r\n"
+		  "Connection: close\r\n"
+		  //"Cookie: \r\n"
+		  "Cache-Control: no-cache\r\n\r\n"
+		  );
+	//
+	// post data
+	//
+	char *to = ei->m_toAddress.getBufStart();
+	char *from = ei->m_fromAddress.getBufStart();
+
+	char *crawl = "unknown2";
+	CollectionRec *cr = g_collectiondb.m_recs[ei->m_collnum];
+	if ( cr ) crawl = cr->m_diffbotCrawlName.getBufStart();
+
+	SafeBuf ub;
+	ub.safePrintf( "{\"key\":\"GhWT0UpcVBl7kmumrt9dqg\","
+		       "\"template_name\":\"crawl-finished\","
+		       "\"template_content\": [],"
+		       "\"message\": {"
+		       "\"to\": ["
+		       "{"
+		       "\"email\":\"%s\""
+		       "}"
+		       "],"
+
+		       "\"from_email\":\"%s\","
+		       "\"headers\": {"
+		       "\"Reply-To\":\"%s\""
+		       "},"
+		       "\"bcc_address\":\"%s\","
+		       "\"global_merge_vars\":["
+		       "{"
+		       "\"name\":\"CRAWLNAME\","
+		       "\"content\":\"%s\""
+		       "}"
+		       "]"
+		       "}"
+		       "}"
+		       , to
+		       , from
+		       , from
+		       , from
+		       , crawl
+		       );
+	// this is not for application/json content type in POST request
+	//ub.urlEncode();
+	// how big?
+	int32_t contentLen = ub.length();
+	// append the post data to the full request
+	sb.safeMemcpy ( &ub );
+	// make sure ends in \0
+	sb.nullTerm();
+
+	// set it
+	char *needle = "Content-Length: ";
+	int32_t needleLen = gbstrlen(needle);
+	char *s = strstr(sb.getBufStart(),needle);
+	s += needleLen;
+	char c = s[4];
+	sprintf(s,"%04"INT32"",contentLen);
+	s[4] = c;
+	
+
+	// show it
+	log("email: sending request to https://mandrillapp.com/ : %s",
+	    sb.getBufStart() );
+
+	// gotta get the cookie
+	char *uu = "https://mandrillapp.com/";
+	if ( ! g_httpServer.getDoc ( uu,
+				     0, // ip
+				     0                 , // offset
+				     -1                , // size
+				     false             , // m_ifModifiedSince
+				     ei              , // state
+				     gotMandrillReplyWrapper    , // 
+				     60*1000           , // timeout
+				     0                 , // m_proxyIp
+				     0                 , // m_proxyPort
+				     100*1024          , // m_maxTextDocLen
+				     100*1024          , // m_maxOtherDocLen  
+				     NULL,     // user agent
+				     "HTTP/1.0" , //proto
+				     true, // post?
+				     NULL, // cookie
+				     NULL, // additional header
+				     sb.getBufStart() ) ) // full requesst
+		return false;
+	// must have been an error
+	log("net: Got error getting page from mandrill: %s.",
+	    mstrerror(g_errno));
+	// ignore it
+	g_errno = 0;
+	// always call this at the end
+	return true;
+}
+	
+/////////////////////////////
+//
+// send two notifications, email and webhook
+//
+/////////////////////////////
+
+void doneSendingNotifyEmailWrapper ( void *state ) {
+	EmailInfo *ei = (EmailInfo *)state;
+	ei->m_notifyBlocked--;
+	// error?
+	log("build: email notification status (count=%i) (ei=0x%"PTRFMT"): %s",
+	    (int)ei->m_notifyBlocked,(PTRTYPE)ei,mstrerror(g_errno));
+	// ignore it for rest
+	g_errno = 0;
+	// wait for post url to get done
+	if ( ei->m_notifyBlocked > 0 ) return;
+	// unmark it
+	//ei->m_inUse = false;
+	// all done
+	ei->m_finalCallback ( ei->m_finalState );
+	// nuke it
+	mfree ( ei , sizeof(EmailInfo) ,"eialrt" );
+}
+
+void doneGettingNotifyUrlWrapper ( void *state , TcpSocket *sock ) {
+	EmailInfo *ei = (EmailInfo *)state;
+	ei->m_notifyBlocked--;
+	// error?
+	log("build: url notification status (count=%i) (ei=0x%"PTRFMT"): %s",
+	    (int)ei->m_notifyBlocked,(PTRTYPE)ei,mstrerror(g_errno));
+	// wait for email to get done
+	if ( ei->m_notifyBlocked > 0 ) return;
+	// unmark it
+	//ei->m_inUse = false;
+	// all done
+	ei->m_finalCallback ( ei->m_finalState );
+	// nuke it
+	mfree ( ei , sizeof(EmailInfo) ,"eialrt" );
+}
+
+// for printCrawlDetailsInJson()
+#include "PageCrawlBot.h"
+
+// . return false if would block, true otherwise
+// . used to send email and get a url when a crawl hits a maxToCrawl
+//   or maxToProcess limitation.
+bool sendNotification ( EmailInfo *ei ) {
+
+	// disable for now
+	//log("ping: NOT SENDING NOTIFICATION -- DEBUG!!");
+	//return true;
+
+	//if ( ei->m_inUse ) { char *xx=NULL;*xx=0; }
+
+	// caller must set this, as well as m_finalCallback/m_finalState
+	CollectionRec *cr = g_collectiondb.m_recs[ei->m_collnum];
+
+	char *email = "";
+	char *url   = "";
+	char *crawl = "unknown2";
+
+	if ( cr ) email = cr->m_notifyEmail.getBufStart();
+	if ( cr ) url   = cr->m_notifyUrl.getBufStart();
+	if ( cr ) crawl = cr->m_diffbotCrawlName.getBufStart();
+
+	// sanity check, can only call once
+	if ( ei->m_notifyBlocked != 0 ) { char *xx=NULL;*xx=0; }
+
+	//ei->m_inUse = true;
+
+
+	if ( email && email[0] ) {
+		log("build: sending email notification to %s for "
+		    "crawl \"%s\" : %s",
+		    email,crawl,ei->m_spiderStatusMsg.getBufStart());
+		SafeBuf msg;
+		msg.safePrintf("Your crawl \"%s\" has a new status: %s"
+			       , ei->m_spiderStatusMsg.getBufStart()
+			       , crawl );
+
+		// reset m_length otherwise it builds up
+		ei->m_toAddress.reset();
+		ei->m_toAddress.safeStrcpy ( email );
+		ei->m_toAddress.nullTerm();
+		
+		// reset m_length otherwise it builds up
+		ei->m_fromAddress.reset();
+		ei->m_fromAddress.safePrintf("support@diffbot.com");
+
+		/*
+		ei->m_subject.safePrintf("crawl paused");
+		ei->m_body.safePrintf("Your crawl for collection \"%s\" "
+				      "has been paused because it hit "
+				      "a maxPagesToCrawl or maxPagesToProcess "
+				      "limitation."
+				      , cr->m_coll);
+		*/
+		ei->m_state = ei;//this;
+		ei->m_callback = doneSendingNotifyEmailWrapper;
+		// this will usually block, unless error maybe
+		if ( ! sendEmailThroughMandrill ( ei ) )
+			ei->m_notifyBlocked++;
+	}
+
+	if ( url && url[0] ) {
+		log("build: sending url notification to %s for coll \"%s\"",
+		    url,crawl);
+
+		Url uu; uu.set ( url );
+
+		SafeBuf fullReq;
+		fullReq.safePrintf("POST %s HTTP/1.0\r\n"
+				   "User-Agent: Crawlbot/2.0\r\n"
+				   "Accept: */*\r\n"
+				   "Host: "
+				   , uu.getPath()
+				   );
+		fullReq.safeMemcpy ( uu.getHost() , uu.getHostLen() );
+		fullReq.safePrintf("\r\n");
+		// make custom headers
+		fullReq.safePrintf ("X-Crawl-Name: %s\r\n"
+				    // last \r\n is added in HttpRequest.cpp
+				    "X-Crawl-Status: %s\r\n" // hdrs
+				    , cr->m_diffbotCrawlName.getBufStart()
+				    , ei->m_spiderStatusMsg.getBufStart()
+				    );
+		// also in post body
+		SafeBuf postContent;
+		// the collection details
+		printCrawlDetailsInJson ( &postContent , cr );
+		// content-length of it
+		fullReq.safePrintf("Content-Length: %"INT32"\r\n",
+				   postContent.length());
+		// type is json
+		fullReq.safePrintf("Content-Type: application/json\r\n");
+		fullReq.safePrintf("\r\n");
+		// then the post content
+		fullReq.safeMemcpy ( &postContent );
+		fullReq.nullTerm();
+
+		// GET request
+		if ( ! g_httpServer.getDoc ( url ,
+					     0 , // ip
+					     0 , // offset
+					    -1 , // size
+					     false, // ifmodsince
+					     ei,//this ,
+					     doneGettingNotifyUrlWrapper ,
+					     60*1000 , // timeout
+					     0, // proxyip
+					     0 , // proxyport
+					     10000, // maxTextDocLen
+					     10000, // maxOtherDocLen
+					     "Crawlbot/2.0", // user agent
+					     "HTTP/1.0", // proto
+					     true , // doPost
+					     NULL, // cookie
+					     NULL , // custom hdrs
+					     fullReq.getBufStart() ,
+					     NULL ) )
+			ei->m_notifyBlocked++;
+	}
+
+	if ( ei->m_notifyBlocked == 0 ) {
+		//ei->m_inUse = false;
+		// nuke it
+		mfree ( ei , sizeof(EmailInfo) ,"eialrt" );
+		return true;
+	}
+
+	// we blocked, wait
+	return false;
+}

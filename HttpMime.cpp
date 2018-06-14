@@ -24,12 +24,16 @@ char *g_contentTypeStrings [] = {
 	"bmp"  , // 13
 	"javascript" , // 14
 	"css"  , // 15
-	"json"   // 16
+	"json" ,  // 16
+	"image", // 17
+	"spiderstatus" // 18
 };
 
 HttpMime::HttpMime () { reset(); }
 
 void HttpMime::reset ( ) {
+	m_mimeStartPtr     = NULL;
+	m_firstCookie      = NULL;
 	m_status           = -1;
 	m_contentLen       = -1;
 	m_lastModifiedDate =  0;
@@ -43,12 +47,15 @@ void HttpMime::reset ( ) {
 	m_locationFieldLen = 0;
 	m_contentEncodingPos = NULL;
 	m_contentLengthPos = NULL;
+	m_contentTypePos   = NULL;
 }
 
 // . returns false if could not get a valid mime
 // . we need the url in case there's a Location: mime that's base-relative
-bool HttpMime::set ( char *buf , long bufLen , Url *url ) {
+bool HttpMime::set ( char *buf , int32_t bufLen , Url *url ) {
 	// reset some stuff
+	m_mimeStartPtr     = NULL;
+	m_firstCookie      = NULL;
 	m_contentLen       = -1;
 	m_content          = NULL;
 	m_bufLen           =  0;
@@ -61,11 +68,17 @@ bool HttpMime::set ( char *buf , long bufLen , Url *url ) {
 	if ( bufLen < 13 ) { m_boundaryLen = 0; return false; }
 	// . get the length of the Mime, must end in \r\n\r\n , ...
 	// . m_bufLen is used as the mime length
+	m_mimeStartPtr = buf;
 	m_bufLen = getMimeLen ( buf , bufLen , &m_boundaryLen );
 	// . return false if we had no mime boundary
 	// . but set m_bufLen to 0 so getMimeLen() will return 0 instead of -1
 	//   thus avoiding a potential buffer overflow
-	if ( m_bufLen < 0 ) { m_bufLen = 0; m_boundaryLen = 0; return false; }
+	if ( m_bufLen < 0 ) { 
+		m_bufLen = 0; 
+		m_boundaryLen = 0; 
+		log("mime: no rnrn boundary detected");
+		return false; 
+	}
 	// set this
 	m_content = buf + m_bufLen;
 	// . parse out m_status, m_contentLen, m_lastModifiedData, contentType
@@ -74,11 +87,11 @@ bool HttpMime::set ( char *buf , long bufLen , Url *url ) {
 }
 
 // . returns -1 if no boundary found
-long HttpMime::getMimeLen ( char *buf , long bufLen , long *bsize ) {
+int32_t HttpMime::getMimeLen ( char *buf , int32_t bufLen , int32_t *bsize ) {
 	// size of the boundary
 	*bsize = 0;
 	// find the boundary
-	long i;
+	int32_t i;
 	for ( i = 0 ; i < bufLen ; i++ ) {
 		// continue until we hit a \r or \n
 		if ( buf[i] != '\r' && buf[i] != '\n' ) continue;
@@ -107,7 +120,7 @@ long HttpMime::getMimeLen ( char *buf , long bufLen , long *bsize ) {
 }
 
 // returns false on bad mime
-bool HttpMime::parse ( char *mime , long mimeLen , Url *url ) {
+bool HttpMime::parse ( char *mime , int32_t mimeLen , Url *url ) {
 	// reset locUrl to 0
 	m_locUrl.reset();
 	// return if we have no valid complete mime
@@ -134,7 +147,7 @@ bool HttpMime::parse ( char *mime , long mimeLen , Url *url ) {
 	while ( p < pend ) {
 		// compute the length of the string starting at p and ending
 		// at a \n or \r
-		long len = 0;
+		int32_t len = 0;
 		while ( &p[len] < pend && p[len]!='\n' && p[len]!='\r' ) len++;
 		// . if we could not find a \n or \r there was an error
 		// . MIMEs must always end in \n or \r
@@ -155,11 +168,17 @@ bool HttpMime::parse ( char *mime , long mimeLen , Url *url ) {
 			time_t now = time(NULL);
 			if (m_lastModifiedDate > now) m_lastModifiedDate = now;
 		}
-		else if ( strncasecmp ( p , "Content-Type:"   ,13) == 0 ) 
+		else if ( strncasecmp ( p , "Content-Type:"   ,13) == 0 ) {
 			m_contentType = getContentTypePrivate ( p + 13 );
-		else if ( strncasecmp ( p , "Set-Cookie: "   ,11) == 0 ) {
+			char *s = p + 13;
+			while ( *s == ' ' || *s == '\t' ) s++;
+			m_contentTypePos = s;
+		}
+		else if ( strncasecmp ( p , "Set-Cookie:"   ,10) == 0 ) {
+			if ( ! m_firstCookie ) m_firstCookie = p;
 			m_cookie = p + 11;
-			m_cookieLen = gbstrlen ( p + 11 );
+			if ( m_cookie[0] == ' ' ) m_cookie++;
+			m_cookieLen = gbstrlen ( m_cookie );
 		}
 		else if ( strncasecmp ( p , "Location:"       , 9) == 0 ) {
 			// point to it
@@ -207,6 +226,8 @@ bool HttpMime::parse ( char *mime , long mimeLen , Url *url ) {
 // . #3: Sun Nov  6 08:49:37 1994       ;ANSI C's asctime() format
 // . #4: 06 Nov 1994 08:49:37 GMT  ... my own
 // . #5: 2007-12-31
+// . #6: 2008-04-30T20:48:25Z (ISO8601)
+
 time_t atotime ( char *s ) {
 
 	// skip non-alnum padding
@@ -214,7 +235,7 @@ time_t atotime ( char *s ) {
 
 	// if first char is a num, it's type #4
 	if ( is_digit(*s) ) {
-		long num = atol(s);
+		int32_t num = atol(s);
 		// 2007-12-31
 		if ( num > 1900 ) return atotime5 ( s );
 		return atotime4 ( s );
@@ -234,6 +255,8 @@ time_t atotime ( char *s ) {
 	// otherwise, must be type 3
 	return atotime3 ( s );
 }
+
+#include "Dates.h" // for getTimeZone()
 
 // #1: Sun, 06 Nov 1994 08:49:37 GMT  ;RFC 822, updated by RFC 1123
 time_t atotime1 ( char *s ) {
@@ -256,17 +279,32 @@ time_t atotime1 ( char *s ) {
 	getTime ( s , &t.tm_sec , &t.tm_min , &t.tm_hour );
 	// unknown if we're in  daylight savings time
 	t.tm_isdst = -1;
+
 	// translate using mktime
-	time_t local = mktime ( &t );
+	time_t global = timegm ( &t );
+
+	// skip HH:MM:SS
+	while ( *s && ! isspace (*s) ) s++;	
+
+	// no timezone following??? fix core.
+	if ( ! *s ) return global;
+
+	// skip spaces
+	while ( isspace (*s) ) s++;
+	// convert local time to "utc" or whatever timezone "s" points to,
+	// which is usually gmt or utc
+	int32_t tzoff = getTimeZone ( s ) ;
+	if ( tzoff != BADTIMEZONE ) global += tzoff;
+	return global;
+
 	// now, convert to utc
 	//time_t utc  = time(NULL);
 	// get time here locally
 	//time_t here = localtime(&utc);
 	// what is the diff?
-	//long delta = here - utc;
+	//int32_t delta = here - utc;
 	// modify our time to make it into utc
 	//return local - delta;
-	return local;
 }
 
 // #2: Sunday, 06-Nov-94 08:49:37 GMT ;RFC 850,obsoleted by RFC1036
@@ -291,7 +329,17 @@ time_t atotime2 ( char *s ) {
 	// unknown if we're in  daylight savings time
 	t.tm_isdst = -1;
 	// translate using mktime
-	return mktime ( &t );
+	time_t global = timegm ( &t );
+
+	// skip HH:MM:SS
+	while ( ! isspace (*s) ) s++;	
+	// skip spaces
+	while ( isspace (*s) ) s++;
+	// convert local time to "utc" or whatever timezone "s" points to,
+	// which is usually gmt or utc
+	int32_t tzoff = getTimeZone ( s ) ;
+	if ( tzoff != BADTIMEZONE ) global += tzoff;
+	return global;
 }
 
 // #3: Sun Nov  6 08:49:37 1994       ;ANSI C's asctime() format
@@ -317,7 +365,7 @@ time_t atotime3 ( char *s ) {
 	// unknown if we're in  daylight savings time
 	t.tm_isdst = -1;
 	// translate using mktime
-	time_t tt = mktime ( &t );
+	time_t tt = timegm ( &t );
 	return tt;
 }
 
@@ -344,15 +392,26 @@ time_t atotime4 ( char *s ) {
 	// unknown if we're in  daylight savings time
 	t.tm_isdst = -1;
 	// translate using mktime
-	return mktime ( &t );
+	time_t global = timegm ( &t );
+
+	// skip HH:MM:SS
+	while ( ! isspace (*s) ) s++;	
+	// skip spaces
+	while ( isspace (*s) ) s++;
+	// convert local time to "utc" or whatever timezone "s" points to,
+	// which is usually gmt or utc
+	int32_t tzoff = getTimeZone ( s ) ;
+	if ( tzoff != BADTIMEZONE ) global += tzoff;
+	return global;
 }
 
 // 2007-12-31
+// 2008-04-30T20:48:25Z (ISO8601)
 time_t atotime5 ( char *s ) {
 	// this time structure, once filled, will help yield a time_t
 	struct tm t;
 	// YEAR
-	long y = atol ( s ) ;
+	int32_t y = atol ( s ) ;
 	// must be > 1900
 	if ( y < 1900 ) return -1;
 	if ( y > 2100 ) return -1;
@@ -379,19 +438,20 @@ time_t atotime5 ( char *s ) {
 	t.tm_mday = atol ( s );
 	while ( isdigit (*s) ) s++;
 	while ( isspace (*s) ) s++;	
+        if (*s == 'T')         s++;
 
 	// TIME
 	getTime ( s , &t.tm_sec , &t.tm_min , &t.tm_hour );
 	// unknown if we're in  daylight savings time
 	t.tm_isdst = -1;
 	// translate using mktime
-	return mktime ( &t );
+	return timegm ( &t );
 }
 
 
 // sunday=0, monday=1, tuesday=2, wednesday=3, thursday=4, friday=5, saturday=6
 // sun=0, mon=1, tue=2, wed=3, thu=4, fri=5, sat=6
-long getWeekday ( char *s ) {
+int32_t getWeekday ( char *s ) {
 
 	char a = tolower(s[0]);
 	char b = tolower(s[1]);
@@ -414,7 +474,7 @@ long getWeekday ( char *s ) {
 	return 0;
 }
 
-long getMonth ( char *s ) {
+int32_t getMonth ( char *s ) {
 
 	char a = tolower(s[0]);
 	char b = tolower(s[1]);
@@ -450,11 +510,83 @@ void getTime ( char *s , int *sec , int *min , int *hour ) {
 	*sec  = atol ( s );
 }
 
+int32_t getContentTypeFromStr ( char *s ) {
+
+	int32_t slen = gbstrlen(s);
+
+	// trim off spaces at the end
+	char tmp[64];
+	if ( s[slen-1] == ' ' ) {
+		strncpy(tmp,s,63);
+		tmp[63] = '\0';
+		int32_t newLen = gbstrlen(tmp);
+		s = tmp;
+		char *send = tmp + newLen;
+		for ( ; send>s && send[-1] == ' '; send-- );
+		*send = '\0';
+	}
+
+	
+	// -1 means unknown
+	//int32_t ct = -1;
+	int32_t ct = CT_UNKNOWN;
+	// html
+	if      (!strcasecmp(s,"text/html"               ) ) ct = CT_HTML;
+	else if (!strcasecmp(s,"text/plain"              ) ) ct = CT_TEXT;
+	else if (!strcasecmp(s,"text/xml"                ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"text/txt"                ) ) ct = CT_TEXT;
+	else if (!strcasecmp(s,"text"                    ) ) ct = CT_TEXT;
+	else if (!strcasecmp(s,"text"                    ) ) ct = CT_TEXT;
+	else if (!strcasecmp(s,"txt"                     ) ) ct = CT_TEXT;
+	else if (!strcasecmp(s,"application/xml"         ) ) ct = CT_XML;
+	// we were not able to spider links on an xhtml doc because
+	// this was set to CT_XML, so try CT_HTML
+	else if (!strcasecmp(s,"application/xhtml+xml"   ) ) ct = CT_HTML;
+	else if (!strcasecmp(s,"application/rss+xml"     ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"rss"                     ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"application/rdf+xml"     ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"application/atom+xml"    ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"atom+xml"                ) ) ct = CT_XML;
+	else if (!strcasecmp(s,"application/pdf"         ) ) ct = CT_PDF;
+	else if (!strcasecmp(s,"application/msword"      ) ) ct = CT_DOC;
+	else if (!strcasecmp(s,"application/vnd.ms-excel") ) ct = CT_XLS;
+	else if (!strcasecmp(s,"application/vnd.ms-powerpoint")) ct = CT_PPT;
+	else if (!strcasecmp(s,"application/mspowerpoint") ) ct = CT_PPT;
+	else if (!strcasecmp(s,"application/postscript"  ) ) ct = CT_PS;
+	else if (!strcasecmp(s,"application/warc"        ) ) ct = CT_WARC;
+	else if (!strcasecmp(s,"application/arc"         ) ) ct = CT_ARC;
+        else if (!strcasecmp(s,"image/gif"               ) ) ct = CT_GIF;
+        else if (!strcasecmp(s,"image/jpeg"              ) ) ct = CT_JPG;
+        else if (!strcasecmp(s,"image/png"               ) ) ct = CT_PNG;
+        else if (!strcasecmp(s,"image/tiff"              ) ) ct = CT_TIFF;
+        else if (!strncasecmp(s,"image/",6               ) ) ct = CT_IMAGE;
+	else if (!strcasecmp(s,"application/javascript"  ) ) ct = CT_JS;
+	else if (!strcasecmp(s,"application/x-javascript") ) ct = CT_JS;
+	else if (!strcasecmp(s,"application/x-gzip"      ) ) ct = CT_GZ;
+	else if (!strcasecmp(s,"text/javascript"         ) ) ct = CT_JS;
+	else if (!strcasecmp(s,"text/x-js"               ) ) ct = CT_JS;
+	else if (!strcasecmp(s,"text/js"                 ) ) ct = CT_JS;
+	else if (!strcasecmp(s,"text/css"                ) ) ct = CT_CSS;
+	else if (!strcasecmp(s,"application/json"        ) ) ct = CT_JSON;
+	// facebook.com:
+	else if (!strcasecmp(s,"application/vnd.wap.xhtml+xml") ) ct =CT_HTML;
+	else if (!strcasecmp(s,"binary/octet-stream") ) ct = CT_UNKNOWN;
+	else if (!strcasecmp(s,"application/octet-stream") ) ct = CT_UNKNOWN;
+	else if (!strcasecmp(s,"application/binary" ) ) ct = CT_UNKNOWN;
+	else if (!strcasecmp(s,"application/x-tar" ) ) ct = CT_UNKNOWN;
+	else if ( !strncmp ( s , "audio/",6)  ) ct = CT_UNKNOWN;
+	// . semicolon separated list of info, sometimes an element is html
+	// . these might have an address in them...
+	else if (!strcasecmp(s,"text/x-vcard" )  ) ct = CT_HTML;
+
+	return ct;
+}
+
 // . s is a NULL terminated string like "text/html"
-long HttpMime::getContentTypePrivate ( char *s ) {
+int32_t HttpMime::getContentTypePrivate ( char *s ) {
 	char *send = NULL;
 	char c;
-	long ct;
+	int32_t ct;
 	// skip spaces
 	while ( *s==' ' || *s=='\t' ) s++;
 	// find end of s
@@ -488,58 +620,19 @@ long HttpMime::getContentTypePrivate ( char *s ) {
 	}
 
  next:
+
 	// temp term it for the strcmp() function
 	c = *send; *send = '\0';
 	// set this
-	ct = -1;
+	//ct = -1;
 
-	// html
-	if      (!strcasecmp(s,"text/html"               ) ) ct = CT_HTML;
-	else if (!strcasecmp(s,"text/plain"              ) ) ct = CT_TEXT;
-	else if (!strcasecmp(s,"text/xml"                ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"text/txt"                ) ) ct = CT_TEXT;
-	else if (!strcasecmp(s,"text"                    ) ) ct = CT_TEXT;
-	else if (!strcasecmp(s,"text"                    ) ) ct = CT_TEXT;
-	else if (!strcasecmp(s,"txt"                     ) ) ct = CT_TEXT;
-	else if (!strcasecmp(s,"application/xml"         ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"application/xhtml+xml"   ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"application/rss+xml"     ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"rss"                     ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"application/rdf+xml"     ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"application/atom+xml"    ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"atom+xml"                ) ) ct = CT_XML;
-	else if (!strcasecmp(s,"application/pdf"         ) ) ct = CT_PDF;
-	else if (!strcasecmp(s,"application/msword"      ) ) ct = CT_DOC;
-	else if (!strcasecmp(s,"application/vnd.ms-excel") ) ct = CT_XLS;
-	else if (!strcasecmp(s,"application/vnd.ms-powerpoint")) ct = CT_PPT;
-	else if (!strcasecmp(s,"application/mspowerpoint") ) ct = CT_PPT;
-	else if (!strcasecmp(s,"application/postscript"  ) ) ct = CT_PS;
-        else if (!strcasecmp(s,"image/gif"               ) ) ct = CT_GIF;
-        else if (!strcasecmp(s,"image/jpeg"              ) ) ct = CT_JPG;
-        else if (!strcasecmp(s,"image/png"               ) ) ct = CT_PNG;
-        else if (!strcasecmp(s,"image/tiff"              ) ) ct = CT_TIFF;
-	else if (!strcasecmp(s,"application/javascript"  ) ) ct = CT_JS;
-	else if (!strcasecmp(s,"application/x-javascript") ) ct = CT_JS;
-	else if (!strcasecmp(s,"text/javascript"         ) ) ct = CT_JS;
-	else if (!strcasecmp(s,"text/x-js"               ) ) ct = CT_JS;
-	else if (!strcasecmp(s,"text/js"                 ) ) ct = CT_JS;
-	else if (!strcasecmp(s,"text/css"                ) ) ct = CT_CSS;
-	else if (!strcasecmp(s,"application/json"        ) ) ct = CT_JSON;
-	// facebook.com:
-	else if (!strcasecmp(s,"application/vnd.wap.xhtml+xml") ) ct =CT_HTML;
-	else if (!strcasecmp(s,"binary/octet-stream") ) ct = CT_UNKNOWN;
-	else if (!strcasecmp(s,"application/octet-stream") ) ct = CT_UNKNOWN;
-	else if (!strcasecmp(s,"application/binary" ) ) ct = CT_UNKNOWN;
-	else if (!strcasecmp(s,"application/x-tar" ) ) ct = CT_UNKNOWN;
-	else if ( !strncmp ( s , "audio/",6)  ) ct = CT_UNKNOWN;
-	// . semicolon separated list of info, sometimes an element is html
-	// . these might have an address in them...
-	else if (!strcasecmp(s,"text/x-vcard" )  ) ct = CT_HTML;
+	// returns CT_UNKNOWN if unknown
+	ct = getContentTypeFromStr  ( s );
 
 	// log it for reference
 	//if ( ct == -1 ) { char *xx=NULL;*xx=0; }
-	if ( ct == -1 ) { 
-		ct = CT_UNKNOWN;
+	if ( ct == CT_UNKNOWN ) { 
+		//ct = CT_UNKNOWN;
 		log("http: unrecognized content type \"%s\"",s);
 	}
 	// unterm it
@@ -549,12 +642,36 @@ long HttpMime::getContentTypePrivate ( char *s ) {
 }
 
 // the table that maps a file extension to a content type
-static HashTable s_mimeTable;
+static HashTableX s_mimeTable;
 bool s_init = false;
 
 void resetHttpMime ( ) {
 	s_mimeTable.reset();
 }
+
+const char *extensionToContentTypeStr2 ( char *ext , int32_t elen ) {
+	// assume text/html if no extension provided
+	if ( ! ext || ! ext[0] ) return NULL;
+	if ( elen <= 0 ) return NULL;
+	// get hash for table look up
+	int32_t key = hash32 ( ext , elen );
+	char **pp = (char **)s_mimeTable.getValue ( &key );
+	if ( ! pp ) return NULL;
+	return *pp;
+}
+
+const char *HttpMime::getContentTypeFromExtension ( char *ext , int32_t elen) {
+	// assume text/html if no extension provided
+	if ( ! ext || ! ext[0] ) return "text/html";
+	if ( elen <= 0 ) return "text/html";
+	// get hash for table look up
+	int32_t key = hash32 ( ext , elen );
+	char **pp = (char **)s_mimeTable.getValue ( &key );
+	// if not found in table, assume text/html
+	if ( ! pp ) return "text/html";
+	return *pp;
+}
+
 
 // . list of types is on: http://www.duke.edu/websrv/file-extensions.html
 // . i copied it to the bottom of this file though
@@ -562,11 +679,11 @@ const char *HttpMime::getContentTypeFromExtension ( char *ext ) {
 	// assume text/html if no extension provided
 	if ( ! ext || ! ext[0] ) return "text/html";
 	// get hash for table look up
-	long key = hash32n ( ext );
-	char *ptr = (char *)s_mimeTable.getValue ( key );
-	if ( ptr ) return ptr;
+	int32_t key = hash32n ( ext );
+	char **pp = (char **)s_mimeTable.getValue ( &key );
 	// if not found in table, assume text/html
-	return "text/html";
+	if ( ! pp ) return "text/html";
+	return *pp;
 }
 
 const char *HttpMime::getContentEncodingFromExtension ( char *ext ) {
@@ -579,12 +696,12 @@ const char *HttpMime::getContentEncodingFromExtension ( char *ext ) {
 }
 
 // make a redirect mime
-void HttpMime::makeRedirMime ( char *redir , long redirLen ) {
+void HttpMime::makeRedirMime ( char *redir , int32_t redirLen ) {
 	char *p = m_buf;
-	memcpy ( p , "HTTP/1.0 302 RD\r\nLocation: " , 27 );
+	gbmemcpy ( p , "HTTP/1.0 302 RD\r\nLocation: " , 27 );
 	p += 27;
 	if ( redirLen > 600 ) redirLen = 600;
-	memcpy ( p , redir , redirLen );
+	gbmemcpy ( p , redir , redirLen );
 	p += redirLen;
 	*p++ = '\r';
 	*p++ = '\n';
@@ -598,16 +715,16 @@ void HttpMime::makeRedirMime ( char *redir , long redirLen ) {
 }
 
 // a cacheTime of -1 means browser should not cache at all
-void HttpMime::makeMime  ( long    totalContentLen    , 
-			   long    cacheTime          ,
+void HttpMime::makeMime  ( int32_t    totalContentLen    , 
+			   int32_t    cacheTime          ,
 			   time_t  lastModified       ,
-			   long    offset             , 
-			   long    bytesToSend        ,
+			   int32_t    offset             , 
+			   int32_t    bytesToSend        ,
 			   char   *ext                ,
 			   bool    POSTReply          ,
 			   char   *contentType        ,
 			   char   *charset            ,
-			   long    httpStatus         ,
+			   int32_t    httpStatus         ,
 			   char   *cookie             ) {
 	// assume UTF-8
 	//if ( ! charset ) charset = "utf-8";
@@ -687,16 +804,17 @@ void HttpMime::makeMime  ( long    totalContentLen    ,
 		if ( ! charset ) charset = "utf-8";
 		//sprintf ( m_buf , 
 		p += sprintf ( p,
-			  "HTTP/1.0 %li%s\r\n"
+			  "HTTP/1.0 %"INT32"%s\r\n"
 			  "Date: %s\r\n"
 			       //"P3P: CP=\"CAO PSA OUR\"\r\n"
+			  "Access-Control-Allow-Origin: *\r\n"
 			  "Server: Gigablast/1.0\r\n"
-			  "Content-Length: %li\r\n"
+			  "Content-Length: %"INT32"\r\n"
 			  //"Expires: Wed, 23 Dec 2003 10:23:01 GMT\r\n"
 			  //"Expires: -1\r\n"
 			  "Connection: Close\r\n"
 			  "%s"
-			  "Content-Type: %s\r\n\r\n",
+			  "Content-Type: %s\r\n",
 			  //"Connection: Keep-Alive\r\n"
 			  //"%s"
 			  //"Location: fuck\r\n"
@@ -715,12 +833,14 @@ void HttpMime::makeMime  ( long    totalContentLen    ,
 		if ( ! charset ) charset = "utf-8";
 		//sprintf ( m_buf , 
 		p += sprintf( p,
-			      "HTTP/1.0 %li Partial content\r\n"
+			      "HTTP/1.0 %"INT32" Partial content\r\n"
 			      "%s"
-			      "Content-Length: %li\r\n"
-			      "Content-Range: %li-%li(%li)\r\n"// added "bytes"
+			      "Content-Length: %"INT32"\r\n"
+			      "Content-Range: %"INT32"-%"INT32"(%"INT32")\r\n"// added "bytes"
 			      "Connection: Close\r\n"
 			      //"P3P: CP=\"CAO PSA OUR\"\r\n"
+			      // for ajax support
+			      "Access-Control-Allow-Origin: *\r\n"
 			      "Server: Gigablast/1.0\r\n"
 			      "%s"
 			      "Date: %s\r\n"
@@ -745,21 +865,29 @@ void HttpMime::makeMime  ( long    totalContentLen    ,
 		if ( httpStatus == 200 ) smsg = " OK";
 		//sprintf ( m_buf , 
 		p += sprintf( p,
-			      "HTTP/1.0 %li%s\r\n"
-			      // make it at least 4 spaces so we can change
-			      // the length of the content should we insert
-			      // a login bar in Proxy::storeLoginBar()
-			      "Content-Length: %04li\r\n"
+			      "HTTP/1.0 %"INT32"%s\r\n"
+			      , httpStatus , smsg );
+		// if content length is not known, as in diffbot.cpp, then
+		// do not print it into the mime
+		if ( totalContentLen >= 0 )
+			p += sprintf ( p , 
+				       // make it at least 4 spaces so we can
+				       // change the length of the content 
+				       // should we insert a login bar in 
+				       // Proxy::storeLoginBar()
+				       "Content-Length: %04"INT32"\r\n"
+				       , totalContentLen );
+		p += sprintf ( p ,
 			      "%s"
 			      "Content-Type: %s",
-			      httpStatus , smsg ,
-			      totalContentLen , enc , contentType );
+			       enc , contentType );
 		if ( charset ) p += sprintf ( p , "; charset=%s", charset );
 		p += sprintf ( p , "\r\n");
 		p += sprintf ( p ,
 			       //"Connection: Keep-Alive\r\n"
 			       "Connection: Close\r\n"
 			       //"P3P: CP=\"CAO PSA OUR\"\r\n"
+			       "Access-Control-Allow-Origin: *\r\n"
 			       "Server: Gigablast/1.0\r\n"
 			       "%s"
 			       "Date: %s\r\n"
@@ -957,7 +1085,10 @@ static char *s_ext[] = {
      "xwd" , "image/x-xwindowdump",
      "xyz" , "chemical/x-pdb",
       "zip" , "application/zip" ,
-      "xpi", "application/x-xpinstall"
+      "xpi", "application/x-xpinstall",
+      // newstuff
+      "warc", "application/warc",
+      "arc", "application/arc"
 };
 
 // . init s_mimeTable in this call
@@ -969,10 +1100,13 @@ bool HttpMime::init ( ) {
 	// make sure only called once
 	s_init = true;
 	//s_mimeTable.set ( 256 );
+	//s_mimeTable.setLabel("mimetbl");
+	if ( ! s_mimeTable.set(4,sizeof(char *),256,NULL,0,false,1,"mimetbl"))
+		return false;
 	// set table from internal list
-	for ( unsigned long i = 0 ; i < sizeof(s_ext)/sizeof(char *) ; i+=2 ) {
-		long key = hash32n ( s_ext[i] );
-		if ( ! s_mimeTable.addKey ( key , (long)s_ext[i+1] ) ) 
+	for ( uint32_t i = 0 ; i < sizeof(s_ext)/sizeof(char *) ; i+=2 ) {
+		int32_t key = hash32n ( s_ext[i] );
+		if ( ! s_mimeTable.addKey ( &key , &s_ext[i+1] ) ) 
 			return log("HttpMime::init: failed to set table.");
 	}
 	// quick text
@@ -982,14 +1116,54 @@ bool HttpMime::init ( ) {
 		return log("http: Failed to init mime table correctly.");
 	}
 	// a more thorough test
-	for ( unsigned long i = 0 ; i < sizeof(s_ext)/sizeof(char *) ; i+=2) {
+	for ( uint32_t i = 0 ; i < sizeof(s_ext)/sizeof(char *) ; i+=2) {
 		tt = getContentTypeFromExtension ( s_ext[i] );
 		if ( strcmp(tt,s_ext[i+1]) == 0 ) continue;
 		g_errno = EBADENGINEER;
-		return log("http: Failed to do mime table correctly. i=%li",i);
+		return log("http: Failed to do mime table correctly. i=%"INT32"",i);
 	}
 
 	// TODO: set it from a user supplied file here
 	return true;
 }
 
+bool HttpMime::addCookiesIntoBuffer ( SafeBuf *sb ) {
+	// point to start of request
+	if ( m_bufLen <= 0 ) return true;
+	if ( ! m_mimeStartPtr ) return true;
+	if ( ! m_firstCookie  ) return true;
+	char *p = m_firstCookie;
+	char *pend = m_mimeStartPtr + m_bufLen;
+	while ( p < pend ) {
+		// compute the length of the string starting at p and ending
+		// at a \n or \r
+		int32_t len = 0;
+		while ( &p[len] < pend && p[len]!='\n' && p[len]!='\r' ) len++;
+		// . if we could not find a \n or \r there was an error
+		// . MIMEs must always end in \n or \r
+		if ( &p[len] >= pend ) return false;
+		// . stick a NULL at the end of the line 
+		// . overwrites \n or \r TEMPORARILY
+		char c = p [ len ];
+		p [ len ] = '\0';
+		// parse out some meaningful data
+		if ( strncasecmp ( p , "Set-Cookie:"   ,10) == 0 ) {
+			char *cookie = p + 11;
+			if ( cookie[0] == ' ' ) cookie++;
+			char *cookieEnd = cookie;
+			for ( ; *cookieEnd && *cookieEnd != ';';cookieEnd++);
+			int32_t cookieLen = cookieEnd - cookie;
+			// accumulate into buffer
+			sb->safeMemcpy ( cookie , cookieLen );
+			sb->pushChar(';');
+			sb->nullTerm();
+		}
+		// re-insert the character that we replaced with a '\0'
+		p [ len ] = c;
+		// go to next line
+		p += len;
+		// skip over the cruft at the end of this line
+		while ( p < pend && ( *p=='\r' || *p=='\n' ) ) p++;
+	}
+	return true;
+}

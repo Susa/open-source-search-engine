@@ -14,13 +14,13 @@ Categories *g_categories;
 static int sortCatHash ( const void *h1, const void *h2 );
 
 // properly read from file
-long Categories::fileRead ( int fileid, void *buf, size_t count ) {
+int32_t Categories::fileRead ( int fileid, void *buf, size_t count ) {
 	char *p = (char*)buf;
-	long n = 0;
-	unsigned long sizeRead = 0;
+	int32_t n = 0;
+	uint32_t sizeRead = 0;
 	while ( sizeRead < count ) {
 		n = read ( fileid, p, count - sizeRead );
-		if ( n <= 0 || n > (long)count )
+		if ( n <= 0 || n > (int32_t)count )
 			return n;
 		sizeRead += n;
 		p += n;
@@ -50,7 +50,8 @@ void Categories::reset() {
 	}
 }
 
-long Categories::loadCategories ( char *filename ) {
+// filename usually ./catdb/gbdmoz.structure.dat
+int32_t Categories::loadCategories ( char *filename ) {
 	//ifstream inStream;
 	int inStream;
 
@@ -62,14 +63,15 @@ long Categories::loadCategories ( char *filename ) {
 		return 1;
 	}
 	// read the size of the name buffer
-	if ( fileRead ( inStream, &m_nameBufferSize, sizeof(long) ) !=
-			sizeof(long) ) {
+	if ( fileRead ( inStream, &m_nameBufferSize, sizeof(int32_t) ) !=
+			sizeof(int32_t) ) {
 		log("cat: Error reading structure file: %s", filename);
 		close(inStream);
 		return 1;
 	}
 	// read in the number of cats
-	if ( fileRead ( inStream, &m_numCats, sizeof(long) ) != sizeof(long) ) {
+	// filename usually ./catdb/gbdmoz.structure.dat
+	if ( fileRead ( inStream, &m_numCats, sizeof(int32_t) ) != sizeof(int32_t) ) {
 		log("cat: Error reading structure file: %s", filename);
 		close(inStream);
 		return 1;
@@ -80,7 +82,7 @@ long Categories::loadCategories ( char *filename ) {
 		       sizeof(CategoryHash)*m_numCats;
 	m_buffer = (char*)mmalloc(m_bufferSize, "Categories");
 	if (!m_buffer) {
-		log("cat: Could not allocate %li bytes for Category Buffer",
+		log("cat: Could not allocate %"INT32" bytes for Category Buffer",
 		    m_bufferSize);
 		close(inStream);
 		g_errno = ENOMEM;
@@ -92,7 +94,7 @@ long Categories::loadCategories ( char *filename ) {
 	m_catHash    = (CategoryHash*)(m_buffer +
 				       (sizeof(char)*m_nameBufferSize) +
 				       (sizeof(Category)*m_numCats));
-				       //(sizeof(long)*m_numSymParents));
+				       //(sizeof(int32_t)*m_numSymParents));
 
 	/*
 	// read and fill the name buffer
@@ -105,84 +107,85 @@ long Categories::loadCategories ( char *filename ) {
 	*/
 	
 	// temp buffer to read the whole file first
-	long readSize = m_nameBufferSize + (m_numCats * 30);
+	int32_t readSize = m_nameBufferSize + (m_numCats * 30);
 	char *tempBuffer = (char*)mmalloc(readSize, "Categories");
 	if ( !tempBuffer ) {
-		log("cat: Could not allocate %li bytes for File Temp Buffer",
+		log("cat: Could not allocate %"INT32" bytes for File Temp Buffer",
 		    readSize);
 		close(inStream);
 		g_errno = ENOMEM;
 		return 1;
 	}
-	// read the rest of the file into the temp buffer
+	// . read the rest of the file into the temp buffer
+	// . filename usually ./catdb/gbdmoz.structure.dat
 	if ( fileRead ( inStream, tempBuffer, readSize ) != readSize ) {
 		log("cat: Error reading structure file: %s", filename);
 		close(inStream);
 		return 1;
 	}
 	char *p = tempBuffer;
-	memcpy ( m_nameBuffer, p, m_nameBufferSize );
+	gbmemcpy ( m_nameBuffer, p, m_nameBufferSize );
 	p += m_nameBufferSize;
 	
 	// read and fill the cats
-	for (long i = 0; i < m_numCats; i++) {
+	for (int32_t i = 0; i < m_numCats; i++) {
 		
-		memcpy(&m_cats[i].m_catid, p, sizeof(long));
-		p += sizeof(long);
-		memcpy(&m_cats[i].m_parentid, p, sizeof(long));
-		p += sizeof(long);
-		memcpy(&m_cats[i].m_nameOffset, p, sizeof(long));
-		p += sizeof(long);
-		memcpy(&m_cats[i].m_nameLen, p, sizeof(short));
-		p += sizeof(short);
-		memcpy(&m_cats[i].m_structureOffset, p, sizeof(long));
-		p += sizeof(long);
-		memcpy(&m_cats[i].m_contentOffset, p, sizeof(long));
-		p += sizeof(long);
-		memcpy(&m_cats[i].m_numUrls, p, sizeof(long));
-		p += sizeof(long);
+		gbmemcpy(&m_cats[i].m_catid, p, sizeof(int32_t));
+		p += sizeof(int32_t);
+		gbmemcpy(&m_cats[i].m_parentid, p, sizeof(int32_t));
+		p += sizeof(int32_t);
+		gbmemcpy(&m_cats[i].m_nameOffset, p, sizeof(int32_t));
+		p += sizeof(int32_t);
+		gbmemcpy(&m_cats[i].m_nameLen, p, sizeof(int16_t));
+		p += sizeof(int16_t);
+		gbmemcpy(&m_cats[i].m_structureOffset, p, sizeof(int32_t));
+		p += sizeof(int32_t);
+		gbmemcpy(&m_cats[i].m_contentOffset, p, sizeof(int32_t));
+		p += sizeof(int32_t);
+		gbmemcpy(&m_cats[i].m_numUrls, p, sizeof(int32_t));
+		p += sizeof(int32_t);
 		
 		/*
-		if ( fileRead ( inStream, &m_cats[i].m_catid, sizeof(long) ) !=
-				sizeof(long) ) {
+		if ( fileRead ( inStream, &m_cats[i].m_catid, sizeof(int32_t) ) !=
+				sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
-		if ( fileRead(inStream, &m_cats[i].m_parentid, sizeof(long)) !=
-				sizeof(long) ) {
+		if ( fileRead(inStream, &m_cats[i].m_parentid, sizeof(int32_t)) !=
+				sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		if ( fileRead ( inStream,
 				&m_cats[i].m_nameOffset,
-				sizeof(long) ) != sizeof(long) ) {
+				sizeof(int32_t) ) != sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		if ( fileRead ( inStream,
 				&m_cats[i].m_nameLen,
-				sizeof(short) ) != sizeof(short) ) {
+				sizeof(int16_t) ) != sizeof(int16_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		if ( fileRead ( inStream, &m_cats[i].m_structureOffset,
-				sizeof(long) ) != sizeof(long) ) {
+				sizeof(int32_t) ) != sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		if ( fileRead ( inStream, &m_cats[i].m_contentOffset,
-				sizeof(long) ) != sizeof(long) ) {
+				sizeof(int32_t) ) != sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		if ( fileRead ( inStream, &m_cats[i].m_numUrls,
-				sizeof(long) ) != sizeof(long) ) {
+				sizeof(int32_t) ) != sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
@@ -190,31 +193,40 @@ long Categories::loadCategories ( char *filename ) {
 		*/
 	}
 	// read the category hash
-	for (long i = 0; i < m_numCats; i++) {
+	for (int32_t i = 0; i < m_numCats; i++) {
 		// read the hash
 		/*
 		if ( fileRead ( inStream,
 				&m_catHash[i].m_hash,
-				sizeof(long) ) != sizeof(long) ) {
+				sizeof(int32_t) ) != sizeof(int32_t) ) {
 			log("cat: Error reading structure file: %s", filename);
 			close(inStream);
 			return 1;
 		}
 		*/
 		
-		memcpy(&m_catHash[i].m_hash, p, sizeof(long));
-		p += sizeof(long);
+		gbmemcpy(&m_catHash[i].m_hash, p, sizeof(int32_t));
+		p += sizeof(int32_t);
 		
 		// assign the index
 		m_catHash[i].m_catIndex = i;
 	}
 	// is this a bottleneck? shouldn't it be stored that way on disk?
-	long long start = gettimeofdayInMilliseconds();
+	int64_t start = gettimeofdayInMilliseconds();
 	// sort the category hash by hash value
 	gbsort(m_catHash, m_numCats, sizeof(CategoryHash), sortCatHash);
+
+	// sanity check - no dups allowed
+	uint32_t last = 0xffffffff;
+	for ( int32_t i = 0 ; i < m_numCats ; i++ ) {
+		if ( m_catHash[i].m_hash == last ) 
+			log("dmoz: hash collision on %"UINT32"",last);
+		last = m_catHash[i].m_hash;
+	}
+
 	// time it
-	long long took = gettimeofdayInMilliseconds();
-	if ( took - start > 100 ) log(LOG_INIT,"admin: Took %lli ms to "
+	int64_t took = gettimeofdayInMilliseconds();
+	if ( took - start > 100 ) log(LOG_INIT,"admin: Took %"INT64" ms to "
 				      "sort cat hashes.",took-start);
 	// close the file
 	close(inStream);
@@ -243,7 +255,7 @@ bool Categories::makeBadHashTable ( ) {
 
 	log(LOG_INFO,"cat: Generating hash table of bad url hashes.");
 
-	for ( long i = 0 ; i < m_numCats ; i++ ) {
+	for ( int32_t i = 0 ; i < m_numCats ; i++ ) {
 		// skip if not an bad catid
 		if ( ! isIdBad ( m_cats[i].m_catid ) ) continue;
 		// it is, add the url hash to the table
@@ -264,14 +276,14 @@ bool Categories::makeBadHashTable ( ) {
 
 bool Categories::isInBadCat ( Url *u ) {
 	// hash it
-	unsigned long h = hash32 ( u->getUrl() , u->getUrlLen() );
+	uint32_t h = hash32 ( u->getUrl() , u->getUrlLen() );
 	// if it is in there, it is in a bad catid
 	if ( m_badTable.getSlot ( h ) >= 0 ) return true;
 	// otherwise, not...
 	return false;
 }
 
-bool Categories::isInBadCat ( unsigned long h ) {
+bool Categories::isInBadCat ( uint32_t h ) {
 	// if it is in there, it is in an bad catid
 	if ( m_badTable.getSlot ( h ) >= 0 ) return true;
 	// otherwise, not...
@@ -288,10 +300,10 @@ int sortCatHash ( const void *h1, const void *h2 ) {
 }
 
 // do a binary search to get a cat from an id
-long Categories::getIndexFromId ( long catid ) {
-	long low  = 0;
-	long high = m_numCats-1;
-	long currCat;
+int32_t Categories::getIndexFromId ( int32_t catid ) {
+	int32_t low  = 0;
+	int32_t high = m_numCats-1;
+	int32_t currCat;
 	// binary search
 	while (low <= high) {
 		// next check spot
@@ -310,10 +322,10 @@ long Categories::getIndexFromId ( long catid ) {
 }
 
 // do a binary search to get a cat from a path
-long Categories::getIndexFromPath ( char *str, long strLen ) {
-	long low  = 0;
-	long high = m_numCats-1;
-	long currCat;
+int32_t Categories::getIndexFromPath ( char *str, int32_t strLen ) {
+	int32_t low  = 0;
+	int32_t high = m_numCats-1;
+	int32_t currCat;
 	if (!str || strLen <= 0)
 		return -1;
 	// remove any leading /
@@ -327,9 +339,15 @@ long Categories::getIndexFromPath ( char *str, long strLen ) {
 	// check for top
 	if (strLen == 3 &&
 	    strncasecmp(str, "Top", 3) == 0)
+		// it is catid 2 right? but i guess zero is symbolic for us!
 		return 0;
 	// get the hash
-	unsigned long hash = hash32Lower_a(str, strLen, 0);
+	uint32_t hash = hash32Lower_a(str, strLen, 0);
+	// debug
+	//char c = str[strLen];
+	//str[strLen] = '\0';
+	//log("dmoz: looking up hash %"UINT32" for %s",hash,str);
+	//str[strLen] = c;
 	// binary search
 	while (low <= high) {
 		// next check spot
@@ -348,13 +366,14 @@ long Categories::getIndexFromPath ( char *str, long strLen ) {
 }
 
 // return the catid from the given path
-long Categories::getIdFromPath ( char *str, long strLen ) {
-	long index = getIndexFromPath(str, strLen);
+int32_t Categories::getIdFromPath ( char *str, int32_t strLen ) {
+	if ( ! m_cats ) return -1;
+	int32_t index = getIndexFromPath(str, strLen);
 	return m_cats[index].m_catid;
 }
 
 // check this ID for an RTL starter
-bool Categories::isIdRTLStart ( long catid ) {
+bool Categories::isIdRTLStart ( int32_t catid ) {
 	if ( catid == 88070   || // Top:World:Arabic
 	     catid == 39341   || // Top:World:Farsi
 	     catid == 118215  || // Top:World:Hebrew
@@ -367,23 +386,23 @@ bool Categories::isIdRTLStart ( long catid ) {
 }
 
 // check this ID for an RTL starter
-bool Categories::isIndexRTLStart ( long catIndex ) {
+bool Categories::isIndexRTLStart ( int32_t catIndex ) {
 	if ( catIndex > 0 )
 		return isIdRTLStart(m_cats[catIndex].m_catid);
 	return false;
 }
 
 // determine if a category is RTL from Id
-bool Categories::isIdRTL ( long catid ) {
-	long index = getIndexFromId(catid);
+bool Categories::isIdRTL ( int32_t catid ) {
+	int32_t index = getIndexFromId(catid);
 	if (index < 0)
 		return false;
 	return isIndexRTL(index);
 }
 
 // determine if a category is RTL from Index
-bool Categories::isIndexRTL ( long catIndex ) {
-	long currIndex = catIndex;
+bool Categories::isIndexRTL ( int32_t catIndex ) {
+	int32_t currIndex = catIndex;
 	while (currIndex > 0) {
 		// check if this is one of the RTLs
 		if (isIdRTLStart(m_cats[currIndex].m_catid))
@@ -395,14 +414,14 @@ bool Categories::isIndexRTL ( long catIndex ) {
 }
 
 // check this ID for a top Adult category
-bool Categories::isIdAdultStart ( long catid ) {
+bool Categories::isIdAdultStart ( int32_t catid ) {
 	if ( catid == 17 )    // Top:Adult
 		return true;
 	else
 		return false;
 }
 
-bool Categories::isIdBadStart ( long catid ) {
+bool Categories::isIdBadStart ( int32_t catid ) {
 	// Top:Adult
 	if ( catid ==     17 ) 
 		return true; 
@@ -416,31 +435,31 @@ bool Categories::isIdBadStart ( long catid ) {
 }
 
 // check this index for a top Adult category
-bool Categories::isIndexAdultStart ( long catIndex ) {
+bool Categories::isIndexAdultStart ( int32_t catIndex ) {
 	if (catIndex > 0)
 		return isIdAdultStart(m_cats[catIndex].m_catid);
 	return false;
 }
 
 // check if a category is Adult from Id
-bool Categories::isIdAdult ( long catid ) {
-	long index = getIndexFromId(catid);
+bool Categories::isIdAdult ( int32_t catid ) {
+	int32_t index = getIndexFromId(catid);
 	if (index < 0)
 		return false;
 	return isIndexAdult(index);
 }
 
 // check if a category is "bad" from Id
-bool Categories::isIdBad ( long catid ) {
-	long index = getIndexFromId(catid);
+bool Categories::isIdBad ( int32_t catid ) {
+	int32_t index = getIndexFromId(catid);
 	if (index < 0)
 		return false;
 	return isIndexBad(index);
 }
 
 // check if a category is Adult from Index
-bool Categories::isIndexAdult ( long catIndex ) {
-	long currIndex = catIndex;
+bool Categories::isIndexAdult ( int32_t catIndex ) {
+	int32_t currIndex = catIndex;
 	while (currIndex > 0) {
 		// check if this is the Adult category
 		if ( isIdAdultStart(m_cats[currIndex].m_catid) )
@@ -452,8 +471,8 @@ bool Categories::isIndexAdult ( long catIndex ) {
 }
 
 // check if a category is Adult, gambling or online phrarmacy from Index
-bool Categories::isIndexBad ( long catIndex ) {
-	long currIndex = catIndex;
+bool Categories::isIndexBad ( int32_t catIndex ) {
+	int32_t currIndex = catIndex;
 	while (currIndex > 0) {
 		// check if this is a "bad" category
 		if ( isIdBadStart(m_cats[currIndex].m_catid) )
@@ -465,25 +484,25 @@ bool Categories::isIndexBad ( long catIndex ) {
 }
 
 // print cat information
-void Categories::printCats ( long start, long end ) {
-	for (long i = start; i < end; i++) {
+void Categories::printCats ( int32_t start, int32_t end ) {
+	for (int32_t i = start; i < end; i++) {
 		char str[512];
 		char *s = str;
-		s += sprintf(s, "Cat %li:\n", i);
-		s += sprintf(s, "  CatID: %li\n", m_cats[i].m_catid);
+		s += sprintf(s, "Cat %"INT32":\n", i);
+		s += sprintf(s, "  CatID: %"INT32"\n", m_cats[i].m_catid);
 		s += sprintf(s, "  Name:  ");
-		for (long n = m_cats[i].m_nameOffset;
+		for (int32_t n = m_cats[i].m_nameOffset;
 			  n < m_cats[i].m_nameOffset + m_cats[i].m_nameLen;
 			  n++)
 			s += sprintf(s, "%c", m_nameBuffer[n]);
 		s += sprintf(s, "\n");
-		s += sprintf(s, "  Name Offset:      %li\n",
+		s += sprintf(s, "  Name Offset:      %"INT32"\n",
 				m_cats[i].m_nameOffset);
-		s += sprintf(s, "  Structure Offset: %li\n",
+		s += sprintf(s, "  Structure Offset: %"INT32"\n",
 				m_cats[i].m_structureOffset);
-		s += sprintf(s, "  Content Offset:   %li\n",
+		s += sprintf(s, "  Content Offset:   %"INT32"\n",
 				m_cats[i].m_contentOffset);
-		s += sprintf(s, "  Parent:           %li\n",
+		s += sprintf(s, "  Parent:           %"INT32"\n",
 				m_cats[i].m_parentid);
 		s += sprintf(s, "\n");
 		log ( LOG_INFO, "%s", str );
@@ -491,26 +510,40 @@ void Categories::printCats ( long start, long end ) {
 }
 
 void Categories::printPathFromId ( SafeBuf *sb ,
-				   long catid,
+				   int32_t catid,
 				   bool raw,
 				   bool isRTL ) {
-	long catIndex;
+	int32_t catIndex;
 	// get the index
 	catIndex = getIndexFromId(catid);
-	if (catIndex < 1) return;
+	//if (catIndex < 1) return;
 	printPathFromIndex(sb, catIndex, raw, isRTL);
 }
 
 void Categories::printPathFromIndex ( SafeBuf *sb ,
-				      long catIndex,
+				      int32_t catIndex,
 				      bool raw,
 				      bool isRTL ) {
-	long parentId;
+	int32_t parentId;
 	if (catIndex < 1) return;
 	// get the parent
 	parentId = m_cats[catIndex].m_parentid;
-	// print the parent(s) first
-	if (parentId > 1) {
+	int32_t catid = m_cats[catIndex].m_catid;
+
+	// include Top now. in newer dmoz it is catid2.
+	//if ( catid == 2 ) {
+	//	sb->safePrintf("Top");
+	//	return;
+	//}		
+
+	// . print the parent(s) first
+	// . the new dmoz data dumps signify a parentless topic by
+	//   havings its parentid equal its catid, so avoid infinite
+	//   loops by checking for that here now. mdw oct 2013.
+	// . the new DMOZ has Top has catid 2 now, even though it is
+	//   mistakenly labelled as Top/World, which is really catid 3.
+	//   so make this parentId > 2...
+	if (parentId >= 1 && parentId != catid ) {
 		bool isParentRTL = isIdRTLStart(parentId);
 		// print spacing here if RTL
 		//if (isRTL && !raw)
@@ -528,8 +561,8 @@ void Categories::printPathFromIndex ( SafeBuf *sb ,
 			sb->safePrintf("</span><br>");
 	}
 	// print this category name
-	long nameLen = m_cats[catIndex].m_nameLen;
-	long nameOffset = m_cats[catIndex].m_nameOffset;
+	int32_t nameLen = m_cats[catIndex].m_nameLen;
+	int32_t nameOffset = m_cats[catIndex].m_nameOffset;
 	if (raw) { 
 		sb->safeMemcpy(&m_nameBuffer[nameOffset], nameLen);
 	}
@@ -543,7 +576,7 @@ void Categories::printPathFromIndex ( SafeBuf *sb ,
 					       		nameLen );
 		nameLen = encodeEnd - encodedName;
 		// fill it, replace _ with space
-		for (long i = 0; i < nameLen; i++) {
+		for (int32_t i = 0; i < nameLen; i++) {
 			if (encodedName[i] == '_')
 				sb->safePrintf(" ");
 			else
@@ -553,24 +586,36 @@ void Categories::printPathFromIndex ( SafeBuf *sb ,
 }
 
 void Categories::printPathCrumbFromId ( SafeBuf *sb ,
-					long catid,
+					int32_t catid,
 					bool isRTL ) {
-	long catIndex;
+	int32_t catIndex;
 	// get the index
 	catIndex = getIndexFromId(catid);
-	if (catIndex < 1) return;
+	//if (catIndex < 1) return;
 	printPathCrumbFromIndex(sb, catIndex, isRTL);
 }
 
 void Categories::printPathCrumbFromIndex ( SafeBuf *sb,
-					   long catIndex,
+					   int32_t catIndex,
 					   bool isRTL ) {
-	long parentId;
+	int32_t parentId;
 	if (catIndex < 1) return;
 	// get the parent
 	parentId = m_cats[catIndex].m_parentid;
-	// print the parent(s) first
-	if (parentId > 1) {
+	int32_t catid = m_cats[catIndex].m_catid;
+
+	// include Top now. in newer dmoz it is catid2.
+	// seems to already be included below... because you made it
+	// parentId>1 not parentId>2
+	//if ( catid == 2 ) {
+	//	sb->safePrintf("Top");
+	//	return;
+	//}
+
+	// . print the parent(s) first
+	// . the new dmoz has Top has parentid 2 now, and Top/World is
+	//   catid 3. so make this parentId > 2 not parentId > 1
+	if (parentId > 1 && parentId != catid ) {
 		bool isParentRTL = isIdRTLStart(parentId);
 		printPathCrumbFromId(sb, parentId, isRTL);
 		// print a spacing
@@ -583,8 +628,8 @@ void Categories::printPathCrumbFromIndex ( SafeBuf *sb,
 	sb->safePrintf("<a href=\"/");
 	printPathFromIndex(sb, catIndex, true, isRTL);
 	sb->safePrintf("/\">");
-	long nameLen = m_cats[catIndex].m_nameLen;
-	long nameOffset = m_cats[catIndex].m_nameOffset;
+	int32_t nameLen = m_cats[catIndex].m_nameLen;
+	int32_t nameOffset = m_cats[catIndex].m_nameOffset;
 	// fill it, replace _ with space
 	{
 		// html encode the name
@@ -595,7 +640,7 @@ void Categories::printPathCrumbFromIndex ( SafeBuf *sb,
 					      &m_nameBuffer[nameOffset] +
 					       		nameLen );
 		nameLen = encodeEnd - encodedName;
-		for (long i = 0; i < nameLen; i++) {
+		for (int32_t i = 0; i < nameLen; i++) {
 			if (encodedName[i] == '_')
 				sb->safePrintf(" ");
 			else
@@ -606,9 +651,9 @@ void Categories::printPathCrumbFromIndex ( SafeBuf *sb,
 }
 
 // increment the ptr into the file, possibly reading the next chunk
-char* Categories::incRdfPtr( long skip ) {
-	long n;
-	for (long i = 0; i < skip; i++) {
+char* Categories::incRdfPtr( int32_t skip ) {
+	int32_t n;
+	for (int32_t i = 0; i < skip; i++) {
 		m_rdfPtr++;
 		m_currOffset++;
 		// pull the next chunk if we're at the end
@@ -630,10 +675,10 @@ char* Categories::incRdfPtr( long skip ) {
 }
 
 // parse the rdf file up past a given start tag
-long Categories::rdfParse ( char *tagName ) {
+int32_t Categories::rdfParse ( char *tagName ) {
 	bool inQuote = false;
 	do {
-		long matchPos = 0;
+		int32_t matchPos = 0;
 		// move to the next tag
 		while (*m_rdfPtr != '<' || inQuote ) {
 			// check for quotes
@@ -663,7 +708,7 @@ long Categories::rdfParse ( char *tagName ) {
 }
 
 // move to the next tag in the file
-long Categories::rdfNextTag ( ) {
+int32_t Categories::rdfNextTag ( ) {
 	bool inQuote = false;
 	// move to the next tag
 	while (*m_rdfPtr != '<' || inQuote ) {
@@ -696,7 +741,7 @@ long Categories::rdfNextTag ( ) {
 }
 
 // fill the next quoted string into the buffer
-long Categories::fillNextString(char *str, long max) {
+int32_t Categories::fillNextString(char *str, int32_t max) {
 	// get the next string, skip to the next quote
 	while (*m_rdfPtr != '"') {
 		if (!incRdfPtr())
@@ -707,7 +752,7 @@ long Categories::fillNextString(char *str, long max) {
 		return -1;
 	// . pointing at the string now
 	//   dump it in the buffer
-	long strLen = 0;
+	int32_t strLen = 0;
 	while (*m_rdfPtr != '"') {
 		// fill the next character
 		if (strLen < max) {
@@ -725,7 +770,7 @@ long Categories::fillNextString(char *str, long max) {
 }
 
 // fill the next tag body into the buffer
-long Categories::fillNextTagBody(char *str, long max) {
+int32_t Categories::fillNextTagBody(char *str, int32_t max) {
 	// get the next string, skip to the next quote
 	while (*m_rdfPtr != '>') {
 		if (!incRdfPtr())
@@ -736,7 +781,7 @@ long Categories::fillNextTagBody(char *str, long max) {
 		return -1;
 	// . pointing at the string now
 	//   dump it in the buffer
-	long strLen = 0;
+	int32_t strLen = 0;
 	while (*m_rdfPtr != '<') {
 		// fill the next character
 		if (strLen < max) {
@@ -751,10 +796,10 @@ long Categories::fillNextTagBody(char *str, long max) {
 }
 
 // fix root urls without a trailing /
-long Categories::fixUrl ( char *url, long urlLen ) {
+int32_t Categories::fixUrl ( char *url, int32_t urlLen ) {
 	// get past the first ://
-	long slashi = 0;
-	long newUrlLen = urlLen;
+	int32_t slashi = 0;
+	int32_t newUrlLen = urlLen;
 	while (url[slashi]   != ':' ||
 	       url[slashi+1] != '/' ||
 	       url[slashi+2] != '/') {
@@ -793,7 +838,7 @@ long Categories::fixUrl ( char *url, long urlLen ) {
 	return newUrlLen;
 }
 
- bool Categories::addUrlsToBadHashTable ( long catid  ) {
+bool Categories::addUrlsToBadHashTable ( int32_t catid  ) {
 	 return getTitleAndSummary ( NULL  , // urlorig
 				     0     , // urloriglen
 				     catid ,
@@ -810,41 +855,218 @@ long Categories::fixUrl ( char *url, long urlLen ) {
 				     true  );// just add to table
  }
 
+// just show the urls in dmoz
+bool Categories::printUrlsInTopic ( SafeBuf *sb, int32_t catid ) {
+	int32_t catIndex;
+	uint32_t fileOffset;
+	uint32_t n;
+	char* p;
+	uint32_t readSize;
+	char title[1024];
+	char summ[5000];
+	int32_t maxTitleLen = 1024;
+	int32_t maxSummLen = 5000;
+	int32_t titleLen;
+	int32_t summLen;
+	int32_t urlStrLen;
+	char urlStr[MAX_URL_LEN];
+	int32_t niceness = 0;
+	bool printedStart = false;
+
+	// lookup the index for this catid
+	catIndex = getIndexFromId(catid);
+	if (catIndex < 0)
+		goto errEnd;
+	// get the file offset
+	fileOffset = m_cats[catIndex].m_contentOffset;
+
+	QUICKPOLL( niceness );
+
+	// . open the file
+	char filename[512];
+	sprintf(filename, "%scatdb/%s", g_hostdb.m_dir, RDFCONTENT_FILE);
+	m_rdfStream = open(filename, O_RDONLY | O_NONBLOCK);
+	if ( m_rdfStream < 0 ) {
+		log("cat: Error Opening %s\n", filename);
+		goto errEnd;
+	}
+	// . seek to the offset
+	n = lseek ( m_rdfStream, fileOffset, SEEK_SET );
+	if ( n != fileOffset ) {
+		log("cat: Error seeking to Content Offset %"INT32"", fileOffset);
+		goto errEnd;
+	}
+	// . read in a chunk
+	m_rdfBuffer     = m_rdfSmallBuffer;
+	m_rdfBufferSize = RDFSMALLBUFFER_SIZE;
+
+	p = m_rdfBuffer;
+	readSize = m_rdfBufferSize;
+ readLoop:
+	n = read ( m_rdfStream, p, readSize );
+	if(n > 0 && n != readSize) {
+		p += n;
+		readSize -= n;
+	}
+	//log(LOG_WARN,"build: reading %"INT32" bytes out of %"INT32"",n,m_rdfBufferSize);
+	QUICKPOLL(niceness);
+
+	if(n < 0 && errno == EAGAIN) goto readLoop;
+	
+	if ( n <= 0 || n > (uint32_t)m_rdfBufferSize ) {
+		log("cat: Error Reading Content");
+		goto errEnd;
+	}
+	m_rdfPtr = m_rdfBuffer;
+	m_rdfEnd = &m_rdfBuffer[n];
+	m_currOffset = fileOffset;
+	// . parse to the correct url
+	// parse the first topic and catid
+	if (rdfNextTag() < 0)
+		goto errEnd;
+	if (rdfNextTag() < 0)
+		goto errEnd;
+	// parse until "ExternalPage"
+nextTag:
+	QUICKPOLL((niceness));
+	if (rdfNextTag() < 0)
+		goto errEnd;
+	// check for catid of next topic to stop looking
+	if (m_tagLen == 5 &&
+	    strncmp(m_tagRecfer, "catid", 5) == 0)
+		goto errEnd;
+	if (m_tagLen != 12 ) goto nextTag;
+	if ( strncmp(m_tagRecfer, "ExternalPage", 12) != 0) goto nextTag;
+
+	//
+	// got one
+	//
+
+	// get the next string
+	urlStrLen = fillNextString(urlStr, MAX_URL_LEN-1);
+	if (urlStrLen < 0)
+		goto errEnd;
+
+	// html decode the url
+	/*
+	urlStrLen = htmlDecode(decodedUrl, urlStr, urlStrLen,false,
+			       niceness);
+	gbmemcpy(urlStr, decodedUrl, urlStrLen);
+
+	normUrl.set(urlStr, urlStrLen, true);
+	g_catdb.normalizeUrl(&normUrl, &normUrl);
+	// copy it back
+	urlStrLen = normUrl.getUrlLen();
+	gbmemcpy(urlStr, normUrl.getUrl(), urlStrLen);
+	// make sure there's a trailing / on root urls
+	// and no www.
+	//urlStrLen = fixUrl(urlStr, urlStrLen);
+	// check for an anchor
+	urlAnchor = NULL;
+	urlAnchorLen = 0;
+	//for (int32_t i = 0; i < urlStrLen; i++) {
+	//if (urlStr[i] == '#') {
+	if (normUrl.getAnchorLen() > 0) {
+		//urlAnchor = &urlStr[i];
+		//urlAnchorLen = urlStrLen - i;
+		//urlStrLen = i;
+		urlAnchor = normUrl.getAnchor();
+		urlAnchorLen = normUrl.getAnchorLen();
+		//break;
+	}
+	*/
+
+	// . parse out the title
+	if (rdfParse("d:Title") < 0)
+		goto errEnd;
+
+	titleLen = fillNextTagBody(title, maxTitleLen);
+
+	QUICKPOLL(niceness);
+
+	// . parse out the summary
+	if (rdfParse("d:Description") < 0)
+		goto errEnd;
+
+	summLen = fillNextTagBody(summ, maxSummLen);
+
+	if ( ! printedStart ) {
+		printedStart = true;
+		sb->safePrintf("<ul>");
+	}
+
+	// print it out
+	sb->safePrintf("<li><a href=\"");
+	sb->safeMemcpy ( urlStr , urlStrLen );
+	sb->safePrintf("\">");
+	sb->safeMemcpy ( title , titleLen );
+	sb->safePrintf("</a><br>");
+	sb->safeMemcpy( summ, summLen );
+	sb->safePrintf("<br>");//<br>");
+
+
+	/*
+	// . fill the anchor
+	if (anchor) {
+		if (urlAnchor) {
+			if (urlAnchorLen > maxAnchorLen)
+				urlAnchorLen = maxAnchorLen;
+			gbmemcpy(anchor, urlAnchor, urlAnchorLen);
+			*anchorLen = urlAnchorLen;
+		}
+		else
+			*anchorLen = 0;
+	}
+	*/
+
+	// DO NEXT tag
+	goto nextTag;
+
+errEnd:
+
+	sb->safePrintf("</ul>");
+
+	close(m_rdfStream);
+	return false;
+}
+
+
+
 // . get the title and summary for a specific url
 //   and catid
 bool Categories::getTitleAndSummary ( char  *urlOrig,
-				      long   urlOrigLen,
-				      long   catid,
+				      int32_t   urlOrigLen,
+				      int32_t   catid,
 				      char  *title,
-				      long  *titleLen,
-				      long   maxTitleLen,
+				      int32_t  *titleLen,
+				      int32_t   maxTitleLen,
 				      char  *summ,
-				      long  *summLen,
-				      long   maxSummLen,
+				      int32_t  *summLen,
+				      int32_t   maxSummLen,
 				      char  *anchor,
 				      unsigned char *anchorLen,
-				      long   maxAnchorLen ,
-				      long   niceness ,
+				      int32_t   maxAnchorLen ,
+				      int32_t   niceness ,
 				      bool   justAddToTable ) {
-	long catIndex;
-	unsigned long fileOffset;
-	unsigned long n;
+	int32_t catIndex;
+	uint32_t fileOffset;
+	uint32_t n;
 	char url[MAX_URL_LEN];
-	long urlLen;
+	int32_t urlLen;
 	char urlStr[MAX_URL_LEN];
-	long urlStrLen = 0;
+	int32_t urlStrLen = 0;
 	char decodedUrl[MAX_URL_LEN];
 	char *urlAnchor = NULL;
-	long urlAnchorLen = 0;
+	int32_t urlAnchorLen = 0;
 	Url  normUrl;
 	char* p;
-	unsigned long readSize;
+	uint32_t readSize;
 	// fix the original url
-	//memcpy(url, urlOrig, urlOrigLen);
+	//gbmemcpy(url, urlOrig, urlOrigLen);
 	//urlLen = fixUrl(url, urlOrigLen);
 	normUrl.set(urlOrig, urlOrigLen, true);
 	g_catdb.normalizeUrl(&normUrl, &normUrl);
-	memcpy(url, normUrl.getUrl(), normUrl.getUrlLen());
+	gbmemcpy(url, normUrl.getUrl(), normUrl.getUrlLen());
 	urlLen = normUrl.getUrlLen();
 	// lookup the index for this catid
 	catIndex = getIndexFromId(catid);
@@ -857,7 +1079,7 @@ bool Categories::getTitleAndSummary ( char  *urlOrig,
 
 	// . open the file
 	char filename[512];
-	sprintf(filename, "%scat/%s", g_hostdb.m_dir, RDFCONTENT_FILE);
+	sprintf(filename, "%scatdb/%s", g_hostdb.m_dir, RDFCONTENT_FILE);
 	//m_rdfStream.clear();
 	//m_rdfStream.open(filename, ifstream::in);
 	m_rdfStream = open(filename, O_RDONLY | O_NONBLOCK);
@@ -871,7 +1093,7 @@ bool Categories::getTitleAndSummary ( char  *urlOrig,
 	n = lseek ( m_rdfStream, fileOffset, SEEK_SET );
 	//if (!m_rdfStream.good()) {
 	if ( n != fileOffset ) {
-		log("cat: Error seeking to Content Offset %li", fileOffset);
+		log("cat: Error seeking to Content Offset %"INT32"", fileOffset);
 		goto errEnd;
 	}
 	// . read in a chunk
@@ -888,12 +1110,12 @@ bool Categories::getTitleAndSummary ( char  *urlOrig,
 		p += n;
 		readSize -= n;
 	}
-	//log(LOG_WARN,"build: reading %li bytes out of %li",n,m_rdfBufferSize);
+	//log(LOG_WARN,"build: reading %"INT32" bytes out of %"INT32"",n,m_rdfBufferSize);
 	QUICKPOLL(niceness);
 
 	if(n < 0 && errno == EAGAIN) goto readLoop;
 	
-	if ( n <= 0 || n > (unsigned long)m_rdfBufferSize ) {
+	if ( n <= 0 || n > (uint32_t)m_rdfBufferSize ) {
 		log("cat: Error Reading Content");
 		goto errEnd;
 	}
@@ -924,7 +1146,7 @@ nextTag:
 		// html decode the url
 		urlStrLen = htmlDecode(decodedUrl, urlStr, urlStrLen,false,
 				       niceness);
-		memcpy(urlStr, decodedUrl, urlStrLen);
+		gbmemcpy(urlStr, decodedUrl, urlStrLen);
 		// normalize with Url
 		//normUrl.set(urlStr, urlStrLen, false, false, false, true);
 		normUrl.set(urlStr, urlStrLen, true);
@@ -934,21 +1156,21 @@ nextTag:
 			// but skip if not a root url... because
 			// LinkText::isBadCatUrl() only checks roots...
 			if ( ! normUrl.isRoot() ) goto nextTag;
-			unsigned long h = hash32 ( normUrl.getUrl() ,
+			uint32_t h = hash32 ( normUrl.getUrl() ,
 						   normUrl.getUrlLen() );
 			m_badTable.addKey ( h , 1 );
 			goto nextTag;
 		}
 		// copy it back
 		urlStrLen = normUrl.getUrlLen();
-		memcpy(urlStr, normUrl.getUrl(), urlStrLen);
+		gbmemcpy(urlStr, normUrl.getUrl(), urlStrLen);
 		// make sure there's a trailing / on root urls
 		// and no www.
 		//urlStrLen = fixUrl(urlStr, urlStrLen);
 		// check for an anchor
 		urlAnchor = NULL;
 		urlAnchorLen = 0;
-		//for (long i = 0; i < urlStrLen; i++) {
+		//for (int32_t i = 0; i < urlStrLen; i++) {
 			//if (urlStr[i] == '#') {
 			if (normUrl.getAnchorLen() > 0) {
 				//urlAnchor = &urlStr[i];
@@ -986,7 +1208,7 @@ foundTag:
 		if (urlAnchor) {
 			if (urlAnchorLen > maxAnchorLen)
 				urlAnchorLen = maxAnchorLen;
-			memcpy(anchor, urlAnchor, urlAnchorLen);
+			gbmemcpy(anchor, urlAnchor, urlAnchorLen);
 			*anchorLen = urlAnchorLen;
 		}
 		else
@@ -1011,35 +1233,46 @@ errEnd:
 	return false;
 }
 
-// generate sub categories for a given catid
-long Categories::generateSubCats ( long catid,
-				   SubCategory *subCats,
-				   char **catBuffer,
-				   long  *catBufferSize,
-				   long  *catBufferLen,
-				   bool   allowRealloc ) {
-	long catIndex;
-	unsigned long fileOffset;
-	unsigned long n;
-	long numSubCats = 0;
-	long currType;
+// . generate sub categories for a given catid
+// . store list of SubCategories into "subCatBuf" return # stored
+int32_t Categories::generateSubCats ( int32_t catid,
+				   SafeBuf *subCatBuf 
+				   //SubCategory *subCats,
+				   //char **catBuffer,
+				   //int32_t  *catBufferSize,
+				   //int32_t  *catBufferLen,
+				   //bool   allowRealloc 
+				   ) {
+
+	int32_t catIndex;
+	uint32_t fileOffset;
+	uint32_t n;
+	int32_t numSubCats = 0;
+	int32_t currType;
 	char catStr[MAX_CATNAME_LEN];
-	long catStrLen;
-	long prefixStart;
-	long prefixLen;
-	long nameStart;
-	long nameLen;
-	long catp         = 0;
-	long catBufferInc = *catBufferSize;
-	// lookup the index for this catid
+	int32_t catStrLen;
+	int32_t prefixStart;
+	int32_t prefixLen;
+	int32_t nameStart;
+	int32_t nameLen;
+	int32_t need ;
+	SubCategory *cat;
+	char *p ;
+
+	//int32_t catp         = 0;
+	//int32_t catBufferInc = *catBufferSize;
+	// . lookup the index for this catid
+	// . binary step, guessing to approximate place
+	//   and then scanning from there
 	catIndex = getIndexFromId(catid);
 	if (catIndex < 0)
 		goto errEnd;
 	// get the file offset
 	fileOffset = m_cats[catIndex].m_structureOffset;
 	// open the structure file
+	// catdb/structure.rdf.u8 in utf8
 	char filename[512];
-	sprintf(filename, "%scat/%s", g_hostdb.m_dir, RDFSTRUCTURE_FILE);
+	sprintf(filename, "%scatdb/%s", g_hostdb.m_dir, RDFSTRUCTURE_FILE);
 	//m_rdfStream.clear();
 	//m_rdfStream.open(filename, ifstream::in);
 	m_rdfStream = open(filename, O_RDONLY);
@@ -1053,7 +1286,7 @@ long Categories::generateSubCats ( long catid,
 	n = lseek ( m_rdfStream, fileOffset, SEEK_SET );
 	//if (!m_rdfStream.good()) {
 	if ( n != fileOffset ) {
-		log("cat: Error seeking to Structure Offset %li", fileOffset);
+		log("cat: Error seeking to Structure Offset %"INT32"", fileOffset);
 		goto errEnd;
 	}
 	// . read in a chunk
@@ -1062,16 +1295,20 @@ long Categories::generateSubCats ( long catid,
 	//m_rdfStream.read(m_rdfBuffer, m_rdfBufferSize);
 	//n      = m_rdfStream.gcount();
 	n = read ( m_rdfStream, m_rdfBuffer, m_rdfBufferSize );
-	if ( n <= 0 || n > (unsigned long)m_rdfBufferSize ) {
+	if ( n <= 0 || n > (uint32_t)m_rdfBufferSize ) {
 		log("cat: Error Reading Structure Offset");
 		goto errEnd;
 	}
+	// point to the buffer we just read with m_rdfPtr
 	m_rdfPtr = m_rdfBuffer;
 	m_rdfEnd = &m_rdfBuffer[n];
 	m_currOffset = fileOffset;
 	
 	// parse tags for the sub categories or until we hit /Topic
 nextTag:
+	// . this increments m_rdfPtr until it points to the beginning of a tag
+	// . it may end up reading another chunk from disk
+	// . it memcopies m_tagRecfer to be the name of the tag it points to
 	if (rdfNextTag() < 0)
 		goto gotSubCats;
 	// check for /Topic
@@ -1120,7 +1357,10 @@ nextTag:
 				 catStrLen ,
 				 false,
 				 0);
-	memcpy(catStr, htmlDecoded, catStrLen);
+	gbmemcpy(catStr, htmlDecoded, catStrLen);
+	// reset this offset
+	nameStart = 0;
+	nameLen = catStrLen;
 	// get the prefix and name position/length
 	switch (currType) {
 	case SUBCAT_ALTLANG:
@@ -1130,14 +1370,14 @@ nextTag:
 		// prefix is at the start
 		prefixStart = 0;
 		prefixLen   = 0;
-		nameStart   = 0;
+		//nameStart   = 0;
 		// go to the end of the prefix
 		while (catStr[nameStart] != ':') {
 			nameStart++;
 			prefixLen++;
 		}
-		// skip the :Top/
-		nameStart += 5;
+		// skip the : in :Top/
+		nameStart += 1;
 		nameLen = catStrLen - nameStart;
 		break;
 	case SUBCAT_LETTERBAR:
@@ -1145,9 +1385,9 @@ nextTag:
 		prefixStart = catStrLen - 1;
 		prefixLen   = 1;
 		// skip the Top/ for the name
-		nameStart   = 4;
+		//nameStart   = 4;
 		// lose the Top/, keep the end letter
-		nameLen     = catStrLen - 4;
+		//nameLen     = catStrLen - 4;
 		break;
 	// . don't do this because of ltr?
 	//case SUBCAT_RELATED:
@@ -1167,43 +1407,56 @@ nextTag:
 			prefixStart--;
 			prefixLen++;
 		}
-		// name skips Top/
-		nameStart = 4;
-		nameLen   = catStrLen - 4;
+		// name skips Top/ ... no! we include Top now
+		// because we need it so PageResults.cpp can call
+		// currIndex=g_categories->getIndexFromPath(catName,catNameLen)
+		// on this name, and it needs "Top/" because it was part
+		// of the hash of the full name for the category now.
+		// and we lookup the Category record by that hash
+		// in getIndexFromPath().
+		//nameStart = 4;
+		//nameLen   = catStrLen - 4;
 		break;
 	}
 	// . fill the next sub category
-	if (catp + prefixLen + nameLen >= *catBufferSize) {
-		if (!allowRealloc)
-			goto gotSubCats;
-		// realloc the buffer
-		char *re_catBuffer = (char*)mrealloc ( *catBuffer,
-					       *catBufferSize,
-					       *catBufferSize+catBufferInc,
-					       "Categories" );
-		if (!re_catBuffer) {
-			log ( "Could not allocate %li bytes for catBuffer",
-			      *catBufferSize+catBufferInc );
-			g_errno = ENOMEM;
-			goto errEnd;
-		}
-		*catBuffer = re_catBuffer;
-		*catBufferSize += catBufferInc;
-	}
-	// fill the prefix and name in the buffer and subcat
+	// . fill the prefix and name in the buffer and subcat
+	need = sizeof(SubCategory) + prefixLen + 1 + nameLen + 1;
+
+	// reserve space in safebuf for it
+	if ( ! subCatBuf->reserve(need) ) goto errEnd;
+
+	// point to it in safebuf
+	cat = (SubCategory *)(subCatBuf->getBuf());
+
+	cat->m_prefixLen = prefixLen;
+	cat->m_nameLen = nameLen;
+	cat->m_type = currType;
+	p = cat->m_buf;
+	gbmemcpy ( p , catStr + prefixStart , prefixLen );
+	p += prefixLen;
+	*p++ = '\0';
+	gbmemcpy ( p , catStr + nameStart , nameLen );
+	p += nameLen;
+	*p++ = '\0';
+
+	// update safebuf length
+	subCatBuf->incrementLength ( cat->getRecSize() );
+
+	/*
 	subCats[numSubCats].m_prefixOffset = catp;
 	subCats[numSubCats].m_prefixLen    = prefixLen;
 	if (prefixLen > 0) {
-		memcpy(&((*catBuffer)[catp]), &catStr[prefixStart], prefixLen);
+		gbmemcpy(&((*catBuffer)[catp]), &catStr[prefixStart], prefixLen);
 		catp += prefixLen;
 	}
-	subCats[numSubCats].m_nameOffset   = catp;
+	subCats[numSubCats].m_nameOffset   = catBuf->length();//catp;
 	subCats[numSubCats].m_nameLen      = nameLen;
 	if (nameLen > 0) {
-		memcpy(&((*catBuffer)[catp]), &catStr[nameStart], nameLen);
+		gbmemcpy(&((*catBuffer)[catp]), &catStr[nameStart], nameLen);
 		catp += nameLen;
 	}
 	subCats[numSubCats].m_type         = currType;
+	*/
 	// next sub cat
 	numSubCats++;
 	if (numSubCats >= MAX_SUB_CATS) {
@@ -1214,14 +1467,14 @@ nextTag:
 	// next tag
 	goto nextTag;
 gotSubCats:
-	*catBufferLen = catp;
+	//*catBufferLen = catp;
 	//m_rdfStream.close();
 	//m_rdfStream.clear();
 	close(m_rdfStream);
 	return numSubCats;
 
 errEnd:
-	*catBufferLen = 0;
+	//*catBufferLen = 0;
 	//m_rdfStream.close();
 	//m_rdfStream.clear();
 	close(m_rdfStream);
@@ -1230,20 +1483,20 @@ errEnd:
 
 // creates a directory search request url
 //void Categories::createDirectorySearchUrl ( Url  *url,
-long Categories::createDirSearchRequest ( char *requestBuf,
-					  long  requestBufSize,
-					  long  catid,
+int32_t Categories::createDirSearchRequest ( char *requestBuf,
+					  int32_t  requestBufSize,
+					  int32_t  catid,
 					  char *hostname,
-					  long  hostnameLen,
+					  int32_t  hostnameLen,
 					  char *coll,
-					  long  collLen,
+					  int32_t  collLen,
 					  char *cgi,
-					  long  cgiLen,
+					  int32_t  cgiLen,
 					  bool  cgiFromRequest ,
 					  HttpRequest *r ) {
 	// setup the request Url
 	//char buffer[1024+MAX_COLL_LEN];
-	//long bufferLen;
+	//int32_t bufferLen;
 	//char *p    = buffer;
 	char *p    = requestBuf;
 	//char *pend = buffer + 1024+MAX_COLL_LEN;
@@ -1259,10 +1512,15 @@ long Categories::createDirSearchRequest ( char *requestBuf,
 	char *rrr = r->m_reqBuf.getBufStart();
 	if ( rrr && rrr[0] == 'Z' ) cmd = "ZET";
 	// request
-	p += sprintf(p, "%s /search?dir=%li&dr=0&sc=0&sdir=%li&sdirt=0&c=",
-			cmd, catid, catid);
+	//p += sprintf(p, "%s /search?dir=%"INT32"&dr=0&sc=0&sdir=%"INT32"&sdirt=0&c=",
+	//		cmd, catid, catid);
+	p += sprintf(p, 
+		     "%s /search?q=gbcatid%%3A%"INT32"&dir=%"INT32"&dr=0&sc=0&c="
+		     , cmd
+		     , catid
+		     , catid);
 	// coll
-	memcpy(p, coll, collLen);
+	gbmemcpy(p, coll, collLen);
 	p += collLen;
 	// add extra cgi if we have it and have room
 	if ( cgi && cgiLen > 0 && p + cgiLen + 76 < pend ) {
@@ -1271,9 +1529,9 @@ long Categories::createDirSearchRequest ( char *requestBuf,
 			//p += sprintf(p, "&");
 			*p = '&'; p++;
 			bool ampToggle = false;
-			//for (long i = cgiPos; i < cgiPos + cgiLen; i++) {
+			//for (int32_t i = cgiPos; i < cgiPos + cgiLen; i++) {
 				//if ( p + 10 >= pend ) break;
-			for (long i = 0; i < cgiLen; i++) {
+			for (int32_t i = 0; i < cgiLen; i++) {
 				//*p = decodedPath[i];
 				*p = cgi[i];
 				if (*p == '\0') {
@@ -1285,13 +1543,13 @@ long Categories::createDirSearchRequest ( char *requestBuf,
 			}
 		}
 		else {
-			memcpy(p, cgi, cgiLen);
+			gbmemcpy(p, cgi, cgiLen);
 			p += cgiLen;
 		}
 	}
 	// hostname
 	p += sprintf(p, " HTTP/1.0\r\nHost: http://");
-	memcpy(p, hostname, hostnameLen);
+	gbmemcpy(p, hostname, hostnameLen);
 	p += hostnameLen;
 	// rest of the request
 	p += sprintf(p, "\r\n"
@@ -1303,18 +1561,18 @@ long Categories::createDirSearchRequest ( char *requestBuf,
 	return p - requestBuf;
 }
 
-static HashTable langTables[32];
+static HashTable langTables[MAX_LANGUAGES+1];
 
 // Horrible hack, must fix later
 bool Categories::loadLangTables(void) {
 	char line[10240];
 	FILE *content;
-	unsigned long h;
-	unsigned long lineno = 0L;
-	unsigned long entries = 0L;
+	uint32_t h;
+	uint32_t lineno = 0L;
+	uint32_t entries = 0L;
 	char *cp;
 	char *cpEnd = line + 10239;
-	if(!(content = fopen("cat/content.rdf.u8", "r"))) {
+	if(!(content = fopen("catdb/content.rdf.u8", "r"))) {
 		log(LOG_INFO, "cat: could not open content file.\n");
 		return(false);
 	}
@@ -1324,7 +1582,7 @@ bool Categories::loadLangTables(void) {
 		lineno++;
 
 		if(lineno % 1000000 == 0)
-			log(LOG_INFO, "cat: Parsing line %ld\n", lineno);
+			log(LOG_INFO, "cat: Parsing line %"INT32"\n", lineno);
 
 		if(!strncmp(line, "</ExternalPage>", 14)) {
 			h = 0L; // end tag, clear hash
@@ -1352,7 +1610,7 @@ bool Categories::loadLangTables(void) {
 		}
 	}
 
-	log(LOG_INFO, "cat: Added %ld total entries.\n", entries);
+	log(LOG_INFO, "cat: Added %"INT32" total entries.\n", entries);
 
 	fclose(content);
 
@@ -1371,9 +1629,9 @@ bool Categories::loadLangTables(void) {
 bool Categories::initLangTables(void) {
 	char name[512];
 	register int i;
-	// long long memory = g_mem.m_used;
-	unsigned long long start;
-	unsigned long long stop;
+	// int64_t memory = g_mem.m_used;
+	uint64_t start;
+	uint64_t stop;
 	for(i = 2; i <= MAX_LANGUAGES; i++) {
 
 		// There is no language 5!
@@ -1405,7 +1663,7 @@ bool Categories::initLangTables(void) {
 			loadLangTables();
 			stop = gettimeofdayInMicroseconds();
 			log(LOG_INFO,
-					"cat: Parsing content took %lld microseconds\n", stop - start);
+					"cat: Parsing content took %"INT64" microseconds\n", stop - start);
 			break;
 		}
 	}
@@ -1413,7 +1671,7 @@ bool Categories::initLangTables(void) {
 }
 
 uint8_t Categories::findLanguage(char *addr) {
-	unsigned long h;
+	uint32_t h;
 	char *cp = addr;
 	if(!strncmp(cp, "http://", 7)) cp += 7;
 	h = hash32(cp, gbstrlen(cp));

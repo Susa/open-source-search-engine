@@ -19,6 +19,8 @@
 #include "Process.h"
 #include "Placedb.h"
 #include "Threads.h"
+#include "Msge1.h"
+#include "Parms.h"
 
 //static void testWrapper ( int fd , void *state ) ;
 static void injectedWrapper ( void *state ) ;
@@ -53,7 +55,7 @@ bool Test::init ( ) {
 }
 
 void Test::reset ( ) {
-	if ( m_urlBuf ) mfree ( m_urlBuf , m_urlEnd - m_urlBuf , "test");
+	if ( m_urlBuf ) mfree ( m_urlBuf , m_urlEnd - m_urlBuf , "test999");
 	//m_spiderLinks = true;//false;
 	m_bypassMenuElimination = false;
 }
@@ -117,15 +119,19 @@ void Test::removeFiles ( ) {
 
 
 	// do not crash for lack of quickpoll now
-	long saved = g_conf.m_useQuickpoll;
+	int32_t saved = g_conf.m_useQuickpoll;
 	g_conf.m_useQuickpoll = false;
+
+	CollectionRec *cr = g_collectiondb.getRec("qatest123");
 
 	// . reset the qatest collection to zero docs
 	// . TODO: implement this. only allow it for qatest coll.
 	// . kinda like Collectiondb::deleteRec() i guess but we need to
 	//   preserve the parms!!
 	// . deletetagdb = false
-	g_collectiondb.resetColl ( "test"  , false );
+	if ( cr ) g_collectiondb.resetColl2 ( cr->m_collnum , 
+					      cr->m_collnum ,
+					      true );
 
 	// reset event count
 	//g_collectiondb.countEvents();
@@ -166,8 +172,8 @@ void Test::initTestRun ( ) {
 	//if ( m_testSpiderEnabledSaved ) return;
 	//if ( m_testParserEnabledSaved ) return;
 
-	// you must have the "test" coll already setup!
-	CollectionRec *cr = g_collectiondb.getRec("test");
+	// you must have the "qatest123" coll already setup!
+	CollectionRec *cr = g_collectiondb.getRec("qatest123");
 	if ( ! cr ) {
 		// note it
 		log("test: please add a collection named \"test\" first.");
@@ -180,18 +186,18 @@ void Test::initTestRun ( ) {
 
 	char *testDir = getTestDir();
 
-	// scan for file named "run.start.%li.txt" which is a dump of all
+	// scan for file named "run.start.%"INT32".txt" which is a dump of all
 	// the conf and parms 
 	char filename[100];
 	File f;
-	long i; for ( i = 0 ; i < 9999 ; i++ ) {
+	int32_t i; for ( i = 0 ; i < 9999 ; i++ ) {
 		// make filename. base it off working dir, g_hostdb.m_dir
-		sprintf ( filename,"%s/%s/run.%li.collparms.txt",
+		sprintf ( filename,"%s/%s/run.%"INT32".collparms.txt",
 			  g_hostdb.m_dir,testDir,i );
 		// exist?
 		f.set ( filename );
 		// open files
-		long status = f.doesExist();
+		int32_t status = f.doesExist();
 		// error?
 		if ( status == -1 ) {
 			// note it in the log
@@ -210,10 +216,10 @@ void Test::initTestRun ( ) {
 	// close it
 	f.close();
 
-	// create the run.%li.version.txt file
+	// create the run.%"INT32".version.txt file
 	char cmd[1000];
 	char vfile[200];
-	sprintf(vfile,"%s/%s/run.%li.version.txt",g_hostdb.m_dir,testDir,i);
+	sprintf(vfile,"%s/%s/run.%"INT32".version.txt",g_hostdb.m_dir,testDir,i);
 	sprintf(cmd,
 		"%s/gb -v >& %s ; "
 		"echo -n \"RUN START TIME: \" >> %s ; "
@@ -227,7 +233,7 @@ void Test::initTestRun ( ) {
 	// save it
 	m_runId = i;
 
-	cr = g_collectiondb.getRec ( "test" );
+	cr = g_collectiondb.getRec ( "qatest123" );
 	if ( ! cr ) {
 		// and no more of this
 		g_conf.m_testParserEnabled = false;
@@ -248,33 +254,33 @@ void Test::initTestRun ( ) {
 	// log out the global parms
 	//
 	char fbuf[100]; 
-	// print our global parms into a file called run.%li.start.txt
-	sprintf(fbuf,"%s/%s/run.%li.confparms.txt",g_hostdb.m_dir,testDir,i);
+	// print our global parms into a file called run.%"INT32".start.txt
+	sprintf(fbuf,"%s/%s/run.%"INT32".confparms.txt",g_hostdb.m_dir,testDir,i);
 	// this saves it as xml i think
-	g_parms.saveToXml ( (char *)&g_conf , fbuf );
+	g_parms.saveToXml ( (char *)&g_conf , fbuf , OBJ_CONF);
 
 	//
 	// log out the coll specific parms
 	//
 	// update name
-	sprintf(fbuf,"%s/%s/run.%li.collparms.txt",g_hostdb.m_dir,testDir,i);
+	sprintf(fbuf,"%s/%s/run.%"INT32".collparms.txt",g_hostdb.m_dir,testDir,i);
 	// save that
-	g_parms.saveToXml ( (char *)cr , fbuf );
+	g_parms.saveToXml ( (char *)cr , fbuf , OBJ_COLL);
 
 	// get the list of urls to download and inject in order
 	sprintf(fbuf,"%s/%s/urls.txt",g_hostdb.m_dir,testDir);
 	// set it
 	f.set ( fbuf ) ;
 	// read it in
-	long fsize = f.getFileSize();
+	int32_t fsize = f.getFileSize();
 	// add one for \0 termination
-	long need = fsize + 1;
+	int32_t need = fsize + 1;
 	// read it in
 	char *buf = (char *)mmalloc ( need ,"qatest");
 	// error?
 	if ( ! buf ) {
 		// note it
-		log("test: failed to alloc %li bytes for url buf",fsize);
+		log("test: failed to alloc %"INT32" bytes for url buf",fsize);
 		// disable testing
 		g_conf.m_testParserEnabled = false;
 		g_conf.m_testSpiderEnabled = false;
@@ -284,11 +290,11 @@ void Test::initTestRun ( ) {
 	// open it
 	f.open ( O_RDONLY );
 	// read it in
-	long rs = f.read ( buf , fsize , 0 ) ;
+	int32_t rs = f.read ( buf , fsize , 0 ) ;
 	// check it
 	if ( rs != fsize ) {
 		// note it
-		log("test: failed to read %li bytes of urls.txt file",fsize);
+		log("test: failed to read %"INT32" bytes of urls.txt file",fsize);
 		// disable testing
 		g_conf.m_testParserEnabled = false;
 		g_conf.m_testSpiderEnabled = false;
@@ -399,7 +405,7 @@ void Test::stopIt ( ) {
 	m_isRunning = false;
 
 	// print time
-	log("test: took %lli ms to complete injections.",
+	log("test: took %"INT64" ms to complete injections.",
 	    gettimeofdayInMilliseconds() - m_testStartTime );
 
 	// get this before setting testParserEnabled to false
@@ -430,7 +436,7 @@ void Test::stopIt ( ) {
 	//
 
 	// only analyze up to last 7 runs
-	long start = m_runId - 7;
+	int32_t start = m_runId - 7;
 	if ( start < 0 ) start = 0;
 
 	SafeBuf sb;
@@ -443,21 +449,21 @@ void Test::stopIt ( ) {
 		      "</tr>\n");
 
 	// take diffs between this run and the last run for confparms
-	for ( long i = m_runId ; i > start ; i-- ) {
-		// shortcut
+	for ( int32_t i = m_runId ; i > start ; i-- ) {
+		// int16_tcut
 		char *dir = g_hostdb.m_dir;
 		// make diff filename
 		char diff1[200];
-		sprintf(diff1,"%s/%s/run.%li.confparms.txt.diff",dir,
+		sprintf(diff1,"%s/%s/run.%"INT32".confparms.txt.diff",dir,
 			testDir,i);
 		File f1;
 		f1.set(diff1);
 		if ( ! f1.doesExist() ) {
 			char df1[200];
 			char df2[200];
-			sprintf(df1,"%s/%s/run.%li.confparms.txt",dir,
+			sprintf(df1,"%s/%s/run.%"INT32".confparms.txt",dir,
 				testDir,i);
-			sprintf(df2,"%s/%s/run.%li.confparms.txt",dir,
+			sprintf(df2,"%s/%s/run.%"INT32".confparms.txt",dir,
 				testDir,i-1);
 			// do the diff
 			char cmd[600];
@@ -465,21 +471,21 @@ void Test::stopIt ( ) {
 			log("test: system(\"%s\")",cmd);
 			system (cmd);
 		}
-		long fs1 = f1.getFileSize();
-		sb.safePrintf("<tr><td>%li</td><td>%li</td>", i,fs1);
+		int32_t fs1 = f1.getFileSize();
+		sb.safePrintf("<tr><td>%"INT32"</td><td>%"INT32"</td>", i,fs1);
 
 		// make diff filename
 		char diff2[200];
-		sprintf(diff2,"%s/%s/run.%li.collparms.txt.diff",dir,
+		sprintf(diff2,"%s/%s/run.%"INT32".collparms.txt.diff",dir,
 			testDir,i);
 		File f2;
 		f2.set(diff2);
 		if ( ! f2.doesExist() ) {
 			char df1[200];
 			char df2[200];
-			sprintf(df1,"%s/%s/run.%li.collparms.txt",dir,
+			sprintf(df1,"%s/%s/run.%"INT32".collparms.txt",dir,
 				testDir,i);
-			sprintf(df2,"%s/%s/run.%li.collparms.txt",dir,
+			sprintf(df2,"%s/%s/run.%"INT32".collparms.txt",dir,
 				testDir,i-1);
 			// do the diff
 			char cmd[600];
@@ -487,20 +493,20 @@ void Test::stopIt ( ) {
 			log("test: system(\"%s\")",cmd);
 			system (cmd);
 		}
-		long fs2 = f2.getFileSize();
-		sb.safePrintf("<td>%li</td>", fs2);
+		int32_t fs2 = f2.getFileSize();
+		sb.safePrintf("<td>%"INT32"</td>", fs2);
 
 		// the version
 		char vf[200]; 
-		sprintf(vf,"%s/%s/run.%li.version.txt",dir,testDir,i);
+		sprintf(vf,"%s/%s/run.%"INT32".version.txt",dir,testDir,i);
 		File f3; 
 		f3.set ( vf );
-		long fs3 = f3.getFileSize();
+		int32_t fs3 = f3.getFileSize();
 		char vbuf[1000];
 		vbuf[0] = 0;
 		if ( fs3 > 0 ) {
 			f3.open(O_RDONLY);
-			long rs = f3.read(vbuf,fs3,0);
+			int32_t rs = f3.read(vbuf,fs3,0);
 			vbuf[fs3] = '\0';
 			if ( rs <= 0 ) continue;
 			f3.close();
@@ -525,21 +531,21 @@ void Test::stopIt ( ) {
 	// reset the url buf ptr
 	m_urlPtr = m_urlBuf;
 	// count em
-	long count = 0;
+	int32_t count = 0;
 
 	// ptrs to each url table
-	long  un = 0;
-	long  uptr [5000]; // offsets now, not char ptr since buf gets reallocd
+	int32_t  un = 0;
+	int32_t  uptr [5000]; // offsets now, not char ptr since buf gets reallocd
 	char  udiff[5000];
-	long  ulen [5000];
-	long  uhits[5000]; // critical errors! validateOutput() choked!
-	long  uunchecked[5000]; // events/addresses found but were not validatd
-	long  umiss[5000];
-	long  usort[5000];
-	long  uevents[5000];
+	int32_t  ulen [5000];
+	int32_t  uhits[5000]; // critical errors! validateOutput() choked!
+	int32_t  uunchecked[5000]; // events/addresses found but were not validatd
+	int32_t  umiss[5000];
+	int32_t  usort[5000];
+	int32_t  uevents[5000];
 	SafeBuf tmp;
 
-	long niceness = MAX_NICENESS;
+	int32_t niceness = MAX_NICENESS;
 
 	// advance to next url
 	for ( ; m_urlPtr < m_urlEnd ; m_urlPtr = next ) {
@@ -556,8 +562,8 @@ void Test::stopIt ( ) {
 		// point to this url
 		char *u = m_urlPtr;
 		// get hash
-		long long h = hash64 ( u , gbstrlen(u) );
-		// shortcut
+		int64_t h = hash64 ( u , gbstrlen(u) );
+		// int16_tcut
 		char *dir = g_hostdb.m_dir;
 
 
@@ -569,20 +575,20 @@ void Test::stopIt ( ) {
 		udiff[un] = 0;
 
 		// print number
-		tmp.safePrintf("%li) ",count++);
+		tmp.safePrintf("%"INT32") ",count++);
 		// . link to our stored http server reply
 		// . TODO: link it to our [cached] copy in the test coll!!!
 		char local[1200];
-		sprintf(local,"/%s/doc.%llu.html",testDir,h);
+		sprintf(local,"/%s/doc.%"UINT64".html",testDir,h);
 		tmp.safePrintf("<a href=\"%s\"><b>%s</b></a> ",local,u);
 		// link to live page
 		tmp.safePrintf(" <a href=\"%s\">live</a> ",u);
 		// link to page parser
 		char ubuf[2000];
 		urlEncode(ubuf,2000,u,gbstrlen(u),true);
-		tmp.safePrintf(" <a href=\"/master/parser?c=test&"
+		tmp.safePrintf(" <a href=\"/admin/parser?c=test&"
 			       "u=%s\">parser</a> ",ubuf);
-		//tmp.safePrintf(" (%llu)",h);
+		//tmp.safePrintf(" (%"UINT64")",h);
 		tmp.safePrintf("<br>\n");
 		//tmp.safePrintf("<br>\n");
 		tmp.safePrintf("<table border=1>\n");
@@ -600,24 +606,24 @@ void Test::stopIt ( ) {
 		//SafeBuf sd;
 
 		// loop over all the runs now, starting with latest run first
-		for ( long ri = m_runId ; ri >= start ; ri-- ) {
+		for ( int32_t ri = m_runId ; ri >= start ; ri-- ) {
 
 			QUICKPOLL(niceness);
 
 			// the diff filename
 			char pdiff[200];
-			sprintf(pdiff,"%s/%s/parse.%llu.%li.html.diff",dir,
+			sprintf(pdiff,"%s/%s/parse.%"UINT64".%"INT32".html.diff",dir,
 				testDir,h,ri);
 			File f;
 			f.set(pdiff);
-			long fs = f.getFileSize();
+			int32_t fs = f.getFileSize();
 			if ( ! f.doesExist() && ri > 0 ) {
 				// make the parse filename
 				char pbuf1[200];
 				char pbuf2[200];
-				sprintf(pbuf1,"%s/%s/parse.%llu.%li.html",
+				sprintf(pbuf1,"%s/%s/parse.%"UINT64".%"INT32".html",
 					dir,testDir,h,ri);
-				sprintf(pbuf2,"%s/%s/parse.%llu.%li.html",
+				sprintf(pbuf2,"%s/%s/parse.%"UINT64".%"INT32".html",
 					dir,testDir,h,ri-1);
 				// sanity check
 				//File tf; tf.set(pbuf1);
@@ -666,14 +672,14 @@ void Test::stopIt ( ) {
 				continue;
 			// relative filename
 			char rel[200];
-			sprintf(rel,"/%s/parse.%llu.%li.html.diff",
+			sprintf(rel,"/%s/parse.%"UINT64".%"INT32".html.diff",
 				testDir,h,ri);
 			char full[200];
-			sprintf(full,"/%s/parse.%llu.%li.html",
+			sprintf(full,"/%s/parse.%"UINT64".%"INT32".html",
 				testDir,h,ri);
 			char validate[200];
 			sprintf(validate,
-				"/%s/parse-shortdisplay.%llu.%li.html",
+				"/%s/parse-int16_tdisplay.%"UINT64".%"INT32".html",
 				testDir,h,ri);
 			// use red font for current run that has a diff!
 			char *t1 = "";
@@ -694,18 +700,18 @@ void Test::stopIt ( ) {
 			//   any more then Spider.cpp creates this file!
 			if ( ri == m_runId ) {
 				char cfile[256];
-				sprintf(cfile,"%s/%s/critical.%llu.%li.txt",
+				sprintf(cfile,"%s/%s/critical.%"UINT64".%"INT32".txt",
 					g_hostdb.m_dir,testDir,h,ri);
 				SafeBuf ttt;
 				ttt.fillFromFile(cfile);
-				// first long is misses, then hits then events
+				// first int32_t is misses, then hits then events
 				umiss[un] = 0;
 				uhits[un] = 0;
 				uevents[un] = 0;
 				uunchecked[un] = 0;
 				if ( ttt.length() >= 3 )
 					sscanf(ttt.getBufStart(),
-					       "%li %li %li %li",
+					       "%"INT32" %"INT32" %"INT32" %"INT32"",
 					       &umiss[un],
 					       &uhits[un],
 					       &uevents[un],
@@ -737,7 +743,7 @@ void Test::stopIt ( ) {
 
 			char *e1 = "<td>";
 			char *e2 = "</td>";
-			long ne = uevents[un];
+			int32_t ne = uevents[un];
 			if ( ne ) { 
 				e1="<td bgcolor=orange><b><font color=brown>"; 
 				e2="</font></b></td>"; 
@@ -751,12 +757,12 @@ void Test::stopIt ( ) {
 				
 			// print the row!
 			tmp.safePrintf("<tr>"
-				      "<td>%s%li%s</td>"
-				       "<td>%s%li%s</td>" // critical hits
-				       "<td>%s%li%s</td>" // critical misses
-				       "%s%li%s" // # events
-				       "%s%li%s" // unchecked
-				       "<td>%s%li%s</td>" // filesize of diff
+				      "<td>%s%"INT32"%s</td>"
+				       "<td>%s%"INT32"%s</td>" // critical hits
+				       "<td>%s%"INT32"%s</td>" // critical misses
+				       "%s%"INT32"%s" // # events
+				       "%s%"INT32"%s" // unchecked
+				       "<td>%s%"INT32"%s</td>" // filesize of diff
 				      // diff filename
 				      "<td><a href=\"%s\">%s%s%s</a></td>"
 				      // full parser output
@@ -779,11 +785,11 @@ void Test::stopIt ( ) {
 			// only fill "sd" for the most recent guy
 			if ( ri != m_runId ) continue;
 
-			// now concatenate the parse-shortdisplay file
+			// now concatenate the parse-int16_tdisplay file
 			// to this little table so qa admin can check/uncheck
 			// validation checkboxes for addresses and events
 			//sprintf(cfile,
-			//	"%s/test/parse-shortdisplay.%llu.%li.html",
+			//	"%s/test/parse-int16_tdisplay.%"UINT64".%"INT32".html",
 			//	g_hostdb.m_dir,h,ri);
 			//sd.fillFromFile ( cfile );
 		}
@@ -813,18 +819,18 @@ void Test::stopIt ( ) {
  bubble:
 	flag = 0;
 	// sort the url tables
-	for ( long i = 0 ; i < un - 1 ; i++ ) {
+	for ( int32_t i = 0 ; i < un - 1 ; i++ ) {
 		QUICKPOLL(niceness);
 		if ( usort[i] >  usort[i+1] ) continue;
 		if ( usort[i] == usort[i+1] ) 
 			if ( udiff[i] >= udiff[i+1] ) continue;
 		// swap em
-		long  tp = uptr[i];
-		long  td = udiff[i];
-		long  um = umiss[i];
-		long  us = usort[i];
-		long  uh = uhits[i];
-		long  tl = ulen [i];
+		int32_t  tp = uptr[i];
+		int32_t  td = udiff[i];
+		int32_t  um = umiss[i];
+		int32_t  us = usort[i];
+		int32_t  uh = uhits[i];
+		int32_t  tl = ulen [i];
 		uptr[i] = uptr[i+1];
 		umiss[i] = umiss[i+1];
 		usort[i] = usort[i+1];
@@ -842,7 +848,7 @@ void Test::stopIt ( ) {
 	if ( flag ) goto bubble;
 
 	// transfer into primary safe buf now
-	for ( long i = 0 ; i < un ; i++ ) 
+	for ( int32_t i = 0 ; i < un ; i++ ) 
 		sb.safeMemcpy(tmp.getBufStart() + uptr[i],ulen[i]);
 
 
@@ -872,15 +878,15 @@ void injectedWrapper ( void *state ) {
 	//g_test.stopIt();
 }
 
-static long s_count = 0;
+static int32_t s_count = 0;
 
 // . returns true if all done!
 // . returns false if still doing stuff
 bool Test::injectLoop ( ) {
 
-	long  dlen   ;
+	int32_t  dlen   ;
 	char *dom    ;
-	long  fakeIp ;
+	int32_t  fakeIp ;
 
  loop:
 	// advance to next url
@@ -903,7 +909,7 @@ bool Test::injectLoop ( ) {
 	for ( ; m_urlPtr < m_urlEnd && *m_urlPtr ; m_urlPtr++ ) ;
 
 	// hash it
-	long long h = hash64b ( u );
+	int64_t h = hash64b ( u );
 	// dedup it lest we freeze up and stopIt() never gets called because
 	// m_urlsAdded is never decremented all the way to zero in Spider.cpp
 	if ( m_dt.isInTable ( &h ) ) goto loop;
@@ -926,11 +932,12 @@ bool Test::injectLoop ( ) {
 	m_sreq.m_domHash32  = fakeIp;
 	m_sreq.m_hostHash32 = fakeIp;
 	m_sreq.m_siteHash32 = fakeIp;
-	m_sreq.m_probDocId = g_titledb.getProbableDocId( m_sreq.m_url );
+	//m_sreq.m_probDocId = g_titledb.getProbableDocId( m_sreq.m_url );
 	// this crap is fake
 	m_sreq.m_isInjecting = 1;
 	// use test-spider subdir for storing pages and spider times?
-	if ( g_conf.m_testSpiderEnabled ) m_sreq.m_useTestSpiderDir = 1;
+	// MDW: this was replaced by m_isParentSiteMap bit.
+	//if ( g_conf.m_testSpiderEnabled ) m_sreq.m_useTestSpiderDir = 1;
 	// use this later
 	m_sreq.m_hasContent = 0;
 	// injected requests use this as the spider time i guess

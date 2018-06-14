@@ -3,7 +3,7 @@
 
 static void gotReplyWrapper20 ( void *state , void *state20 ) ;
 //static void gotReplyWrapper20b ( void *state , UdpSlot *slot );
-static void handleRequest20   ( UdpSlot *slot , long netnice );
+static void handleRequest20   ( UdpSlot *slot , int32_t netnice );
 static bool gotReplyWrapperxd ( void *state ) ;
 
 Msg20::Msg20 () { constructor(); }
@@ -14,27 +14,59 @@ void Msg20::constructor () {
 	m_r       = NULL;
 	m_inProgress = false;
 	m_launched = false;
+	m_ii = -1;
+	m_owningParent = (void *)0x012345;
+	m_constructedId = 5;
 	reset();
 	m_mcast.constructor();
 }
 
 void Msg20::destructor  () { reset(); m_mcast.destructor(); }
 
-void Msg20::reset() { 
-	// not allowed to reset one in progress
-	if ( m_inProgress ) { char *xx=NULL;*xx=0; }
-	m_launched = false;
-	if ( m_request && m_request   != m_requestBuf )
-		mfree ( m_request , m_requestSize  , "Msg20rb" );
+#include "Process.h"
+
+void Msg20::freeReply() {
+
+	//log("msg20: freeing reply for msg20=0x%"PTRFMT" reply=0x%"PTRFMT"",
+	//    (PTRTYPE)this,(PTRTYPE)m_r);
+
+	if ( ! m_r ) return;
 	// sometimes the msg20 reply carries an merged bffer from
 	// msg40 that is a constructed ptr_eventSummaryLines from a
 	// merge operation in msg40. this fixes the "merge20buf1" memory
 	// leak from Msg40.cpp
-	if ( m_r ) m_r->destructor();
-	if ( m_r && m_ownReply ) //&& (char *)m_r != m_replyBuf )
-		mfree ( m_r       , m_replyMaxSize , "Msg20b"  );
+	m_r->destructor();
+	if ( m_ownReply ) mfree ( m_r, m_replyMaxSize , "Msg20b"  );
+	m_r = NULL;
+
+}
+
+void Msg20::reset() { 
+
+	//log("msg20: resetting msg20=0x%"PTRFMT" reply=0x%"PTRFMT"",
+	//    (PTRTYPE)this,(PTRTYPE)m_r);
+
+	if ( ! m_owningParent ) { char *xx=NULL;*xx=0; }
+
+	// not allowed to reset one in progress
+	if ( m_inProgress ) { 
+		// do not core on abrupt exits!
+		if (g_process.m_mode == EXIT_MODE ) {
+			log("msg20: msg20 not being freed because exiting.");
+			return;
+		}
+		// otherwise core
+		char *xx=NULL;*xx=0; 
+	}
+	m_launched = false;
+	if ( m_request && m_request   != m_requestBuf )
+		mfree ( m_request , m_requestSize  , "Msg20rb1" );
+	freeReply();
+	//if ( m_r ) m_r->destructor();
+	//if ( m_r && m_ownReply ) //&& (char *)m_r != m_replyBuf )
+	//	mfree ( m_r       , m_replyMaxSize , "Msg20b"  );
+	//m_r            = NULL; // the reply ptr
 	m_request      = NULL; // the request buf ptr
-	m_r            = NULL; // the reply ptr
 	m_gotReply     = false;
 	m_errno        = 0;
 	m_requestDocId = -1LL;
@@ -62,7 +94,7 @@ bool Msg20::registerHandler ( ) {
 
 // copy "src" to ourselves
 void Msg20::copyFrom ( Msg20 *src ) {
-	memcpy ( this , src , sizeof(Msg20) );
+	gbmemcpy ( this , src , sizeof(Msg20) );
 	// if the Msg20Reply was actually in src->m_replyBuf[] we have to
 	// re-serialize into our this->m_replyBuf[] in order for the ptrs
 	// to be correct
@@ -92,6 +124,8 @@ bool Msg20::getSummary ( Msg20Request *req ) {
 
 	// reset ourselves in case recycled
 	reset();
+
+	if ( ! m_owningParent ) { char *xx=NULL;*xx=0; }
 
 	// consider it "launched"
 	m_launched = true;
@@ -123,44 +157,72 @@ bool Msg20::getSummary ( Msg20Request *req ) {
 	// do not re-route to twins if accessing an external network
 	if ( hostdb != &g_hostdb ) req->m_expected = false;
 
+	if ( req->m_docId < 0 && ! req->ptr_ubuf ) {
+		log("msg20: docid<0 and no url for msg20::getsummary");
+		g_errno = EBADREQUEST;
+		return true;
+	}
+
 	// get groupId from docId, if positive
-	unsigned long groupId ;
+	uint32_t shardNum;
 	if ( req->m_docId >= 0 ) 
-		groupId = hostdb->getGroupIdFromDocId(req->m_docId);
+		shardNum = hostdb->getShardNumFromDocId(req->m_docId);
 	else {
-		long long pdocId = g_titledb.getProbableDocId(req->ptr_ubuf);
-		groupId = getGroupIdFromDocId(pdocId);
+		int64_t pdocId = g_titledb.getProbableDocId(req->ptr_ubuf);
+		shardNum = getShardNumFromDocId(pdocId);
 	}
 
 	// we might be getting inlinks for a spider request
 	// so make sure timeout is inifinite for that...
-	long timeout = 9999999; // 10 million seconds, basically inf.
+	int32_t timeout = 9999999; // 10 million seconds, basically inf.
 	if ( req->m_niceness == 0 ) timeout = 20;
 
+	// for diffbot make timeout super long so we aren't tripped up
+	// by dead hosts that aren't really dead.
+	// CollectionRec *cr = g_collectiondb.getRec ( req->m_collnum );
+	// if ( cr && cr->m_isCustomCrawl && req->m_niceness == 0 ) 
+	// 	timeout = 300;
+
 	// get our group
-	long  allNumHosts = hostdb->getNumHostsPerGroup();
-	Host *allHosts    = hostdb->getGroup ( groupId );
+	int32_t  allNumHosts = hostdb->getNumHostsPerShard();
+	Host *allHosts    = hostdb->getShard ( shardNum );//getGroup(groupId );
 
 	// put all alive hosts in this array
 	Host *cand[32];
-	long long  nc = 0;
-	for ( long i = 0 ; i < allNumHosts ; i++ ) {
+	int64_t  nc = 0;
+	for ( int32_t i = 0 ; i < allNumHosts ; i++ ) {
 		// get that host
 		Host *hh = &allHosts[i];
 		// skip if dead
 		if ( g_hostdb.isDead(hh) ) continue;
+
+		// Respect no-spider, no-query directives from hosts.conf 
+		if ( !req->m_getLinkInfo && ! hh->m_queryEnabled ) continue;
+		if ( req->m_getLinkInfo && ! hh->m_spiderEnabled ) continue;
 		// add it if alive
 		cand[nc++] = hh;
 	}
 	// if none alive, make them all candidates then
 	bool allDead = (nc == 0);
-	for ( long i = 0 ; allDead && i < allNumHosts ; i++ ) 
+	for ( int32_t i = 0 ; allDead && i < allNumHosts ; i++ ) {
+		// NEVER add a noquery host to the candidate list, even
+		// if the query host is dead
+		if ( ! allHosts[i].m_queryEnabled ) continue;
 		cand[nc++] = &allHosts[i];
+	}
+
+	if ( nc == 0 ) {
+		log("msg20: error sending mcast: no queryable hosts "
+		    "availble to handle summary generation");
+		g_errno = EBADENGINEER;
+		m_gotReply = true;
+		return true;
+	}
 
 	// route based on docid region, not parity, because we want to hit
 	// the urldb page cache as much as possible
-	long long sectionWidth =((128LL*1024*1024)/nc)+1;//(DOCID_MASK/nc)+1LL;
-	long long probDocId    = req->m_docId;
+	int64_t sectionWidth =((128LL*1024*1024)/nc)+1;//(DOCID_MASK/nc)+1LL;
+	int64_t probDocId    = req->m_docId;
 	// i think reference pages just pass in a url to get the summary
 	if ( probDocId < 0 && req->size_ubuf ) 
 		probDocId = g_titledb.getProbableDocId ( req->ptr_ubuf );
@@ -174,10 +236,10 @@ bool Msg20::getSummary ( Msg20Request *req ) {
 	// in this way we should still ensure a pretty good biased urldb
 	// cache... 
 	// . TODO: fix the urldb cache preload logic
-	long hostNum = (probDocId % (128LL*1024*1024)) / sectionWidth;
+	int32_t hostNum = (probDocId % (128LL*1024*1024)) / sectionWidth;
 	if ( hostNum < 0 ) hostNum = 0; // watch out for negative docids
 	if ( hostNum >= nc ) { char *xx = NULL; *xx = 0; }
-	long firstHostId = cand [ hostNum ]->m_hostId ;
+	int32_t firstHostId = cand [ hostNum ]->m_hostId ;
 
 	// . make buffer m_request to hold the request
 	// . tries to use m_requestBuf[] if it is big enough to hold it
@@ -201,7 +263,7 @@ bool Msg20::getSummary ( Msg20Request *req ) {
 			      m_requestSize     , 
 			      0x20              , // msgType 0x20
 			      false             , // m_mcast own m_request?
-			      groupId           , // send to group (groupKey)
+			      shardNum          , // send to group (groupKey)
 			      false             , // send to whole group?
 			      probDocId         , // key is lower bits of docId
 			      this              , // state data
@@ -224,6 +286,7 @@ bool Msg20::getSummary ( Msg20Request *req ) {
 			      hostdb            )) {
 		// sendto() sometimes returns "Network is down" so i guess
 		// we just had an "error reply".
+		log("msg20: error sending mcast %s",mstrerror(g_errno));
 		m_gotReply = true;
 		return true;
 	}
@@ -260,11 +323,18 @@ void Msg20::gotReply ( UdpSlot *slot ) {
 	m_inProgress = false;
 	// sanity check
 	if ( m_r ) { char *xx = NULL; *xx = 0; }
+
+	// free our serialized request buffer to save mem
+	if ( m_request && m_request   != m_requestBuf ) {
+		mfree ( m_request , m_requestSize  , "Msg20rb2" );
+		m_request = NULL;
+	}
+
 	// save error so Msg40 can look at it
 	if ( g_errno ) { 
 		m_errno = g_errno; 
 		if ( g_errno != EMISSINGQUERYTERMS )
-			log("query: msg20: got reply for docid %lli : %s",
+			log("query: msg20: got reply for docid %"INT64" : %s",
 			    m_requestDocId,mstrerror(g_errno));
 		return; 
 	}
@@ -288,31 +358,42 @@ void Msg20::gotReply ( UdpSlot *slot ) {
 	//if( rp != m_replyBuf )
 	relabel( rp , m_replyMaxSize, "Msg20-mcastGBR" );
 
-	// sanity check
+	// sanity check. make sure multicast is not going to free the
+	// slot's m_readBuf... we need to own it.
 	if ( freeit ) {
 		log(LOG_LOGIC,"query: msg20: gotReply: Bad engineer.");
 		char *xx = NULL; *xx = 0;
 		return;
 	}
 	// see if too small for a getSummary request
-	if ( m_replySize < (long)sizeof(Msg20Reply) ) { 
+	if ( m_replySize < (int32_t)sizeof(Msg20Reply) ) { 
 		log("query: Summary reply is too small.");
 		//char *xx = NULL; *xx = 0;
 		m_errno = g_errno = EREPLYTOOSMALL; return; }
 
 	// cast it
 	m_r = (Msg20Reply *)rp;
+
+	m_r->m_parentOwner = (void *)this;
+	m_r->m_constructorId = 2;
+
 	// reset this since constructor never called
 	m_r->m_tmp = 0;
 	// we own it now
 	m_ownReply = true;
 	// deserialize it, sets g_errno on error??? not yet TODO!
 	m_r->deserialize();
+
+	// log("msg20: got msg20=0x%"PTRFMT" msg20reply=0x%"PTRFMT" slot=0x%"PTRFMT" s_tmp=%i"
+	//     ,(PTRTYPE)this
+	//     ,(PTRTYPE)m_r
+	//     ,(PTRTYPE)slot
+	//     ,s_tmp);
 }
 
 // . this is called
 // . destroys the UdpSlot if false is returned
-void handleRequest20 ( UdpSlot *slot , long netnice ) {
+void handleRequest20 ( UdpSlot *slot , int32_t netnice ) {
 	// . check g_errno
 	// . before, we were not sending a reply back here and we continued
 	//   to process the request, even though it was empty. the slot
@@ -326,37 +407,48 @@ void handleRequest20 ( UdpSlot *slot , long netnice ) {
 	}
 
 	// ensure request is big enough
-	if ( slot->m_readBufSize < (long)sizeof(Msg20Request) ) {
+	if ( slot->m_readBufSize < (int32_t)sizeof(Msg20Request) ) {
 		g_udpServer.sendErrorReply ( slot , EBADREQUESTSIZE );
 		return;
 	}
+
+	//log("query: got umsg20 %i 0x%"PTRFMT"",slot->m_readBufMaxSize,
+	//    (PTRTYPE)slot->m_readBuf);
 
 	// parse the request
 	Msg20Request *req = (Msg20Request *)slot->m_readBuf;
 
 	// . turn the string offsets into ptrs in the request
 	// . this is "destructive" on "request"
-	long nb = req->deserialize();
+	int32_t nb = req->deserialize();
 	// sanity check
 	if ( nb != slot->m_readBufSize ) { char *xx = NULL; *xx = 0; }
 
 	// sanity check, the size include the \0
-	if ( req->size_coll <= 1 || *req->ptr_coll == '\0' ) {
-		log("query: Got empty collection in msg20 handler. FIX!");
-		char *xx =NULL; *xx = 0; 
+	if ( req->m_collnum < 0 ) {
+		log("query: Got empty collection in msg20 handler. FIX! "
+		    "from ip=%s port=%i",iptoa(slot->m_ip),(int)slot->m_port);
+	        g_udpServer.sendErrorReply ( slot , ENOTFOUND );
+		return; 
+		//char *xx =NULL; *xx = 0; 
 	}
 	// if it's not stored locally that's an error
 	if ( req->m_docId >= 0 && ! g_titledb.isLocal ( req->m_docId ) ) {
-		log("query: Got msg20 request for non-local docId %lli",
+		log("query: Got msg20 request for non-local docId %"INT64"",
 		    req->m_docId);
 	        g_udpServer.sendErrorReply ( slot , ENOTLOCAL ); 
 		return; 
 	}
 
 	// sanity
-	if ( req->m_docId == 0 && ! req->ptr_ubuf ) { char *xx=NULL;*xx=0; }
+	if ( req->m_docId == 0 && ! req->ptr_ubuf ) { //char *xx=NULL;*xx=0; }
+		log("query: Got msg20 request for docid of 0 and no url for "
+		    "collnum=%"INT32" query %s",(int32_t)req->m_collnum,req->ptr_qbuf);
+	        g_udpServer.sendErrorReply ( slot , ENOTFOUND );
+		return; 
+	}
 
-	long long startTime = gettimeofdayInMilliseconds();
+	int64_t startTime = gettimeofdayInMilliseconds();
 
 	// alloc a new state to get the titlerec
 	XmlDoc *xd;
@@ -364,7 +456,7 @@ void handleRequest20 ( UdpSlot *slot , long netnice ) {
 	try { xd = new (XmlDoc); }
 	catch ( ... ) { 
 		g_errno = ENOMEM;
-		log("query: msg20 new(%i): %s", sizeof(XmlDoc),
+		log("query: msg20 new(%"INT32"): %s", (int32_t)sizeof(XmlDoc),
 		    mstrerror(g_errno));
 		g_udpServer.sendErrorReply ( slot, g_errno ); 
 		return; 
@@ -379,6 +471,7 @@ void handleRequest20 ( UdpSlot *slot , long netnice ) {
 	xd->setCallback ( xd , gotReplyWrapperxd );
 	// set set time
 	xd->m_setTime = startTime;
+	xd->m_cpuSummaryStartTime = 0;
 	// . now as for the msg20 reply!
 	// . TODO: move the parse state cache into just a cache of the
 	//   XmlDoc itself, and put that cache logic into XmlDoc.cpp so
@@ -393,25 +486,39 @@ void handleRequest20 ( UdpSlot *slot , long netnice ) {
 bool gotReplyWrapperxd ( void *state ) {
 	// grab it
 	XmlDoc *xd = (XmlDoc *)state;
+
 	// get it
 	UdpSlot *slot = (UdpSlot *)xd->m_slot;
 	// parse the request
 	Msg20Request *req = (Msg20Request *)slot->m_readBuf;
 	// print time
-	long long took = gettimeofdayInMilliseconds() - xd->m_setTime;
+	int64_t now = gettimeofdayInMilliseconds();
+	int64_t took = now - xd->m_setTime;
+	int64_t took2 = now - xd->m_cpuSummaryStartTime;
+
 	// if there is a baclkog of msg20 summary generation requests this
 	// is really not the cpu it took to make the smmary, but how long it
 	// took to get the reply. this request might have had to wait for the
 	// other summaries to finish computing before it got its turn, 
 	// meanwhile its clock was ticking. TODO: make this better?
 	// only do for niceness 0 otherwise it gets interrupted by quickpoll
-	// and can take a long time.
+	// and can take a int32_t time.
 	if ( (req->m_isDebug || took > 100) && req->m_niceness == 0 )
-		log("query: Took %lli ms to compute summary for d=%lli u=%s "
-		    "niceness=%li",
+		log("query: Took %"INT64" ms to compute summary for d=%"INT64" u=%s "
+		    "niceness=%"INT32" status=%s",
 		    took,
 		    xd->m_docId,xd->m_firstUrl.m_url,
-		    xd->m_niceness );
+		    xd->m_niceness ,
+		    mstrerror(g_errno));
+	if ( (req->m_isDebug || took2 > 100) &&
+	     xd->m_cpuSummaryStartTime &&
+	     req->m_niceness == 0 )
+		log("query: Took %"INT64" ms of CPU to compute summary for d=%"INT64" "
+		    "u=%s niceness=%"INT32" q=%s",
+		    took2 ,
+		    xd->m_docId,xd->m_firstUrl.m_url,
+		    xd->m_niceness ,
+		    req->ptr_qbuf );
 	// error?
 	if ( g_errno ) { xd->m_reply.sendReply ( xd ); return true; }
 	// this should not block now
@@ -428,6 +535,15 @@ Msg20Reply::Msg20Reply ( ) {
 	// this is free in destructor, so clear it here
 	//ptr_eventSummaryLines = NULL;
 	m_tmp = 0;
+
+	m_parentOwner = NULL;
+	m_constructorId = 0;
+
+	// seems to be an issue... caused a core with bogus size_dbuf
+	int32_t *sizePtr = &size_tbuf;
+	int32_t *sizeEnd = &size_note;
+	for ( ; sizePtr <= sizeEnd ; sizePtr++ )
+		*sizePtr = 0;
 }
 
 
@@ -448,6 +564,8 @@ void Msg20Reply::destructor ( ) {
 	//m_tmp = 0;
 }
 
+#include "Stats.h"
+
 // . return ptr to the buffer we serialize into
 // . return NULL and set g_errno on error
 bool Msg20Reply::sendReply ( XmlDoc *xd ) {
@@ -457,8 +575,8 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 
 	if ( g_errno ) {
 		// extract titleRec ptr
-		log("query: Had error generating msg20 reply for d=%lli: "
-		    "%s",m_docId, mstrerror(g_errno));
+		log("query: Had error generating msg20 reply for d=%"INT64": "
+		    "%s",xd->m_docId, mstrerror(g_errno));
 		// don't forget to delete this list
 	haderror:
 		mdelete ( xd, sizeof(XmlDoc) , "Msg20" );
@@ -468,12 +586,12 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 	}
 
 	// now create a buffer to store title/summary/url/docLen and send back
-	long  need = getStoredSize();
+	int32_t  need = getStoredSize();
 	char *buf  = (char *)mmalloc ( need , "Msg20Reply" );
 	if ( ! buf ) goto haderror;
 
 	// should never have an error!
-	long used = serialize ( buf , need );
+	int32_t used = serialize ( buf , need );
 
 	// sanity
 	if ( used != need ) { char *xx=NULL;*xx=0; }
@@ -483,7 +601,7 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 	//if ( st->m_memUsed == 0 ) { char *xx=NULL;*xx=0; }
 
 	// use blue for our color
-	long color = 0x0000ff;
+	int32_t color = 0x0000ff;
 	// but use dark blue for niceness > 0
 	if ( xd->m_niceness > 0 ) color = 0x0000b0;
 
@@ -492,7 +610,7 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 	// sanity check
 	if ( ! xd->m_utf8ContentValid ) { char *xx=NULL;*xx=0; }
 	// for records
-	long clen = 0;
+	int32_t clen = 0;
 	if ( xd->m_utf8ContentValid ) clen = xd->size_utf8Content - 1;
 	// show it in performance graph
 	if ( xd->m_startTimeValid ) 
@@ -500,6 +618,7 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 				    xd->m_startTime              , 
 				    gettimeofdayInMilliseconds() ,
 				    color                        );
+	
 	
 	// . del the list at this point, we've copied all the data into reply
 	// . this will free a non-null State20::m_ps (ParseState) for us
@@ -514,20 +633,22 @@ bool Msg20Reply::sendReply ( XmlDoc *xd ) {
 // . this is destructive on the "buf". it converts offs to ptrs
 // . sets m_r to the modified "buf" when done
 // . sets g_errno and returns -1 on error, otherwise # of bytes deseril
-long Msg20::deserialize ( char *buf , long bufSize ) { 
-	if ( bufSize < (long)sizeof(Msg20Reply) ) {
+int32_t Msg20::deserialize ( char *buf , int32_t bufSize ) { 
+	if ( bufSize < (int32_t)sizeof(Msg20Reply) ) {
 		g_errno = ECORRUPTDATA; return -1; }
 	m_r = (Msg20Reply *)buf;
+	m_r->m_parentOwner = (void *)this;
+	m_r->m_constructorId = 1;
 	// do not free "buf"/"m_r"
 	m_ownReply = false;
 	return m_r->deserialize ( );
 }
 
-long Msg20Request::getStoredSize ( ) {
-	long size = (long)sizeof(Msg20Request);
+int32_t Msg20Request::getStoredSize ( ) {
+	int32_t size = (int32_t)sizeof(Msg20Request);
 	// add up string buffer sizes
-	long *sizePtr = &size_qbuf;
-	long *sizeEnd = &size_displayMetas;
+	int32_t *sizePtr = &size_qbuf;
+	int32_t *sizeEnd = &size_displayMetas;
 	for ( ; sizePtr <= sizeEnd ; sizePtr++ )
 		size += *sizePtr;
 	return size;
@@ -535,12 +656,12 @@ long Msg20Request::getStoredSize ( ) {
 
 // . return ptr to the buffer we serialize into
 // . return NULL and set g_errno on error
-char *Msg20Request::serialize ( long *retSize     ,
+char *Msg20Request::serialize ( int32_t *retSize     ,
 				char *userBuf     ,
-				long  userBufSize ) {
+				int32_t  userBufSize ) {
 	// make a buffer to serialize into
 	char *buf  = NULL;
-	long  need = getStoredSize();
+	int32_t  need = getStoredSize();
 	// big enough?
 	if ( need <= userBufSize ) buf = userBuf;
 	// alloc if we should
@@ -551,18 +672,18 @@ char *Msg20Request::serialize ( long *retSize     ,
 	*retSize = need;
 	// copy the easy stuff
 	char *p = buf;
-	memcpy ( p , (char *)this , sizeof(Msg20Request) );
-	p += (long)sizeof(Msg20Request);
+	gbmemcpy ( p , (char *)this , sizeof(Msg20Request) );
+	p += (int32_t)sizeof(Msg20Request);
 	// then store the strings!
-	long  *sizePtr = &size_qbuf;
-	long  *sizeEnd = &size_displayMetas;
+	int32_t  *sizePtr = &size_qbuf;
+	int32_t  *sizeEnd = &size_displayMetas;
 	char **strPtr  = &ptr_qbuf;
 	for ( ; sizePtr <= sizeEnd ;  ) {
 		// sanity check -- cannot copy onto ourselves
 		if ( p > *strPtr && p < *strPtr + *sizePtr ) {
 			char *xx = NULL; *xx = 0; }
 		// copy the string into the buffer
-		memcpy ( p , *strPtr , *sizePtr );
+		gbmemcpy ( p , *strPtr , *sizePtr );
 		// advance our destination ptr
 		p += *sizePtr;
 		// advance both ptrs to next string
@@ -573,12 +694,12 @@ char *Msg20Request::serialize ( long *retSize     ,
 }
 
 // convert offsets back into ptrs
-long Msg20Request::deserialize ( ) {
+int32_t Msg20Request::deserialize ( ) {
 	// point to our string buffer
 	char *p = m_buf;
 	// then store the strings!
-	long  *sizePtr = &size_qbuf;
-	long  *sizeEnd = &size_displayMetas;
+	int32_t  *sizePtr = &size_qbuf;
+	int32_t  *sizeEnd = &size_displayMetas;
 	char **strPtr  = &ptr_qbuf;
 	for ( ; sizePtr <= sizeEnd ;  ) {
 		// convert the offset to a ptr
@@ -594,14 +715,14 @@ long Msg20Request::deserialize ( ) {
 		strPtr++;
 	}
 	// return how many bytes we processed
-	return (long)sizeof(Msg20Request) + (p - m_buf);
+	return (int32_t)sizeof(Msg20Request) + (p - m_buf);
 }
 
-long Msg20Reply::getStoredSize ( ) {
-	long size = (long)sizeof(Msg20Reply);
+int32_t Msg20Reply::getStoredSize ( ) {
+	int32_t size = (int32_t)sizeof(Msg20Reply);
 	// add up string buffer sizes
-	long *sizePtr = &size_tbuf;
-	long *sizeEnd = &size_note;
+	int32_t *sizePtr = &size_tbuf;
+	int32_t *sizeEnd = &size_note;
 	for ( ; sizePtr <= sizeEnd ; sizePtr++ )
 		size += *sizePtr;
 	return size;
@@ -609,21 +730,21 @@ long Msg20Reply::getStoredSize ( ) {
 
 
 // returns NULL and set g_errno on error
-long Msg20Reply::serialize ( char *buf , long bufSize ) {
+int32_t Msg20Reply::serialize ( char *buf , int32_t bufSize ) {
 	// copy the easy stuff
 	char *p = buf;
-	memcpy ( p , (char *)this , sizeof(Msg20Reply) );
-	p += (long)sizeof(Msg20Reply);
+	gbmemcpy ( p , (char *)this , sizeof(Msg20Reply) );
+	p += (int32_t)sizeof(Msg20Reply);
 	// then store the strings!
-	long  *sizePtr = &size_tbuf;
-	long  *sizeEnd = &size_note;
+	int32_t  *sizePtr = &size_tbuf;
+	int32_t  *sizeEnd = &size_note;
 	char **strPtr  = &ptr_tbuf;
 	//char **strEnd= &ptr_note;
 	for ( ; sizePtr <= sizeEnd ;  ) {
 		// sometimes the ptr is NULL but size is positive
 		// so watch out for that
 		if ( *strPtr ) {
-			memcpy ( p , *strPtr , *sizePtr );
+			gbmemcpy ( p , *strPtr , *sizePtr );
 			// advance our destination ptr
 			p += *sizePtr;
 		}
@@ -631,7 +752,7 @@ long Msg20Reply::serialize ( char *buf , long bufSize ) {
 		sizePtr++;
 		strPtr++;
 	}
-	long used = p - buf;
+	int32_t used = p - buf;
 	// sanity check, core on overflow of supplied buffer
 	if ( used > bufSize ) { char *xx = NULL; *xx = 0; }
 	// return it
@@ -639,14 +760,14 @@ long Msg20Reply::serialize ( char *buf , long bufSize ) {
 }
 
 // convert offsets back into ptrs
-long Msg20Reply::deserialize ( ) {
+int32_t Msg20Reply::deserialize ( ) {
 	// point to our string buffer
 	char *p = m_buf;
 	// reset this since constructor never called
 	m_tmp = 0;
 	// then store the strings!
-	long  *sizePtr = &size_tbuf;
-	long  *sizeEnd = &size_note;
+	int32_t  *sizePtr = &size_tbuf;
+	int32_t  *sizeEnd = &size_note;
 	char **strPtr  = &ptr_tbuf;
 	//char **strEnd= &ptr_note;
 	for ( ; sizePtr <= sizeEnd ;  ) {
@@ -654,6 +775,8 @@ long Msg20Reply::deserialize ( ) {
 		*strPtr = p;
 		// make it NULL if size is 0 though
 		if ( *sizePtr == 0 ) *strPtr = NULL;
+		// null str?
+		if ( ! p ) *sizePtr = 0;
 		// sanity check
 		if ( *sizePtr < 0 ) { char *xx = NULL; *xx =0; }
 		// advance our destination ptr
@@ -663,7 +786,7 @@ long Msg20Reply::deserialize ( ) {
 		strPtr++;
 	}
 	// sanity
-	if ( ptr_linkInfo && ((LinkInfo *)ptr_linkInfo)->m_size !=
+	if ( ptr_linkInfo && ((LinkInfo *)ptr_linkInfo)->m_lisize !=
 		    size_linkInfo ) { 
 		log("xmldoc: deserialize msg20 reply corruption error");
 		log("xmldoc: DO YOU NEED TO NUKE CACHEDB.DAT?????");
@@ -672,5 +795,5 @@ long Msg20Reply::deserialize ( ) {
 	}
 
 	// return how many bytes we used
-	return (long)sizeof(Msg20Reply) + (p - m_buf);
+	return (int32_t)sizeof(Msg20Reply) + (p - m_buf);
 }

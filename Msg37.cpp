@@ -9,18 +9,18 @@ static void gotTermFreqWrapper ( void *state ) ;
 // . "termIds/termFreqs" should NOT be on the stack in case we block
 // . i based this on ../titled/Msg25.cpp since it sends out multiple msgs at 
 //   the same time, too
-bool Msg37::getTermFreqs ( char       *coll       ,
-			   long        maxAge     ,
-			   long long  *termIds    ,
-			   long        numTerms   ,
-			   long long  *termFreqs  ,
+bool Msg37::getTermFreqs ( collnum_t collnum,//char       *coll       ,
+			   int32_t        maxAge     ,
+			   int64_t  *termIds    ,
+			   int32_t        numTerms   ,
+			   int64_t  *termFreqs  ,
 			   void       *state      ,
 			   void (* callback)(void *state ) ,
-			   long        niceness   ,
+			   int32_t        niceness   ,
 			   bool        exactCount ) {
 
 	// warning
-	if ( ! coll ) log(LOG_LOGIC,"net: NULL collection. msg37.");
+	if ( collnum < 0 ) log(LOG_LOGIC,"net: bad collection. msg37.");
 	// we haven't got any responses as of yet or sent any requests
 	m_callback    = callback;
 	m_state       = state;
@@ -31,11 +31,12 @@ bool Msg37::getTermFreqs ( char       *coll       ,
 	m_errno       = 0;
 	m_numTerms    = numTerms;
 	m_termFreqs   = termFreqs;
-	m_coll        = coll;
+	m_collnum     = collnum;
+	//m_coll        = coll;
 	m_maxAge      = maxAge;
 	m_termIds     = termIds;
 	// set all to 1 in case there's an error
-	for ( long i = 0 ; i < m_numTerms ; i++ ) {
+	for ( int32_t i = 0 ; i < m_numTerms ; i++ ) {
 		//if ( ignore[i] ) m_termFreqs[i] = 0LL;
 		//else             m_termFreqs[i] = 1LL;
 		m_termFreqs[i] = 1LL;
@@ -69,7 +70,7 @@ bool Msg37::launchRequests ( ) {
 		//	continue;
 		//}
 		// get available slot
-		long j ;
+		int32_t j ;
 		for ( j = 0 ; j < MAX_MSG36_OUT ; j++ ) 
 			if ( ! m_inUse[j] ) break;
 		if ( j >= MAX_MSG36_OUT ) {
@@ -84,7 +85,7 @@ bool Msg37::launchRequests ( ) {
 		m_msg36[j].m_i    = m_i;
 		// . start up a Msg36 to get it
 		// . this will return false if blocks
-		if ( ! m_msg36[j].getTermFreq ( m_coll ,
+		if ( ! m_msg36[j].getTermFreq ( m_collnum ,
 						m_maxAge ,
 						m_termIds[m_i] ,
 						&m_msg36[j],
@@ -137,8 +138,8 @@ void gotTermFreqWrapper ( void *state ) {
 // . returns true if done (or an error finished us)
 // . sets g_errno on error
 bool Msg37::gotTermFreq ( Msg36 *msg36 ) {
-	long i ;
-	long j;
+	int32_t i ;
+	int32_t j;
 	// if called from above skip down to bottom
 	if ( ! msg36 ) goto skip;
 	// . set our m_errno if there was an error so everyone else knows
@@ -173,7 +174,7 @@ bool Msg37::gotTermFreq ( Msg36 *msg36 ) {
 	// . do not merge since someone had an error
 	if ( m_errno ) { g_errno = m_errno ; return true; }
 	// set all to 1 in case there's an error
-	//for ( long i = 0 ; i < m_numTerms ; i++ ) {
+	//for ( int32_t i = 0 ; i < m_numTerms ; i++ ) {
 	//	// skip if ignored
 	//	//if ( m_termFreqs[i] == 0LL ) continue;
 	//	m_termFreqs[i] = m_msg36[i].getTermFreq();

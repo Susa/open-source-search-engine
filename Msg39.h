@@ -19,7 +19,7 @@
 
 #define MAX_MSG39_REQUEST_SIZE (500+MAX_QUERY_LEN)
 
-void  handleRequest39 ( UdpSlot *slot , long netnice ) ;
+void  handleRequest39 ( UdpSlot *slot , int32_t netnice ) ;
 
 class Msg39Request {
 
@@ -32,42 +32,53 @@ class Msg39Request {
 		m_niceness                = MAX_NICENESS;
 		m_maxAge                  = 0;
 		m_maxQueryTerms           = 9999;
-		m_compoundListMaxSize     = 20000000;
+		//m_compoundListMaxSize     = 20000000;
 		m_boolFlag                = 2;
 		m_language                = 0;
 		m_queryExpansion          = false;
 		m_debug                   = 0;
 		m_getDocIdScoringInfo     = true;
 		m_doSiteClustering        = true;
-		m_doIpClustering          = true;
+		m_hideAllClustered        = false;
+		//m_doIpClustering          = true;
 		m_doDupContentRemoval     = true;
 		m_restrictPosdbForQuery   = false;
 		m_addToCache              = false;
 		m_familyFilter            = false;
 		m_timeout                 = -1; // -1 means auto-compute
-		m_getSectionStats         = false;
-		m_useMinAlgo              = false;
-		m_fastIntersection        = -1;
+		//m_useMinAlgo              = false;
+		//m_fastIntersection        = -1;
 		m_stripe                  = 0;
+		m_collnum                 = -1;
 		m_useQueryStopWords       = true;
-		m_useNewAlgo              = true;
+		//m_useNewAlgo              = true;
 		m_doMaxScoreAlgo          = true;
 		m_seoDebug                = false;
 		m_useSeoResultsCache      = false;
-
+		
 		ptr_readSizes             = NULL;
 		ptr_query                 = NULL; // in utf8?
-		ptr_coll                  = NULL;
-
+		ptr_whiteList             = NULL;
+		//ptr_coll                  = NULL;
+		m_forSectionStats         = false;
 		size_readSizes            = 0;
 		size_query                = 0;
-		size_coll                 = 0;
+		size_whiteList            = 0;
+		m_sameLangWeight          = 20.0;
+		m_maxFacets = -1;
+		//size_coll                 = 0;
 
 		m_getDocIdScoringInfo = 1;
 
 		// -1 means to not to docid range restriction
-		m_minDocId = -1;
-		m_maxDocId = -1;
+		m_minDocId = -1LL;
+		m_maxDocId = -1LL;
+
+		m_numDocIdSplits = 1;
+
+		// for widget, to only get results to append to last docid
+		m_maxSerpScore = 0.0;
+		m_minSerpDocId = 0LL;
 
 		m_makeReply = true;
 
@@ -80,12 +91,16 @@ class Msg39Request {
 	// we are requesting that this many docids be returned. Msg40 requests
 	// of Msg3a a little more docids than it needs because it assumes
 	// some will be de-duped at summary gen time.
-	long    m_docsToGet;
-	long    m_nqt; // # of query terms
+	int32_t    m_docsToGet;
+	int32_t    m_maxFacets;
+	int32_t    m_nqt; // # of query terms
 	char    m_niceness;
-	long    m_maxAge;
-	long    m_maxQueryTerms;
-	long    m_compoundListMaxSize;
+	int32_t    m_maxAge;
+	int32_t    m_maxQueryTerms;
+	int32_t    m_numDocIdSplits;
+	float   m_sameLangWeight;
+
+	//int32_t    m_compoundListMaxSize;
 	char    m_boolFlag;
 	uint8_t m_language;
 
@@ -95,7 +110,8 @@ class Msg39Request {
 	char    m_seoDebug;
 	char    m_useSeoResultsCache;
 	char    m_doSiteClustering;
-	char    m_doIpClustering;
+	char    m_hideAllClustered;
+	//char    m_doIpClustering;
 	char    m_doDupContentRemoval;
 	char    m_restrictPosdbForQuery;
 	char    m_addToCache;
@@ -104,33 +120,47 @@ class Msg39Request {
 	char    m_realMaxTop;
 	char    m_stripe;
 	char    m_useQueryStopWords;
-	char    m_useNewAlgo;
+	//char    m_useNewAlgo;
 	char    m_doMaxScoreAlgo;
 
-	char    m_getSectionStats;
-	long    m_siteHash32;// for m_getSectionStats
+	char    m_forSectionStats;
 
-	char    m_useMinAlgo;
-	char    m_fastIntersection;
+	// Msg3a still uses this
+	//int32_t    m_myFacetVal32; // for gbfacet:xpathsite really sectionstats
 
-	long long m_minDocId;
-	long long m_maxDocId;
+	//char    m_useMinAlgo;
+	//char    m_fastIntersection;
+
+	collnum_t m_collnum;
+
+	int64_t m_minDocId;
+	int64_t m_maxDocId;
 	bool      m_makeReply;
 
+	// for widget, to only get results to append to last docid
+	double    m_maxSerpScore;
+	int64_t m_minSerpDocId;
+
 	// msg3a stuff
-	long    m_timeout; // in seconds
+	int32_t    m_timeout; // in seconds
 
 	time_t  m_nowUTC;
 
+	// do not add new string parms before ptr_readSizes or
+	// after ptr_whiteList so serializeMsg() calls still work
 	char   *ptr_readSizes;
 	char   *ptr_termFreqWeights;
 	char   *ptr_query; // in utf8?
-	char   *ptr_coll;
+	char   *ptr_whiteList;
+	//char   *ptr_coll;
 	
-	long    size_readSizes;
-	long    size_termFreqWeights;
-	long    size_query;
-	long    size_coll;
+	// do not add new string parms before size_readSizes or
+	// after size_whiteList so serializeMsg() calls still work
+	int32_t    size_readSizes;
+	int32_t    size_termFreqWeights;
+	int32_t    size_query;
+	int32_t    size_whiteList;
+	//int32_t    size_coll;
 
 	char    m_buf[0];
 };
@@ -143,31 +173,36 @@ public:
 	// zero ourselves out
 	void reset() { memset ( (char *)this,0,sizeof(Msg39Reply) ); };
 
-	long   m_numDocIds;
+	int32_t   m_numDocIds;
 	// # of "unignored" query terms
-	long   m_nqt;
+	int32_t   m_nqt;
 	// # of estimated hits we had
-	long   m_estimatedHits;
-	// for when m_getSectionStats is true
-	SectionStats m_sectionStats;
+	int32_t   m_estimatedHits;
 	// error code
-	long   m_errno;
+	int32_t   m_errno;
 
-	char  *ptr_docIds         ; // the results, long long
-	char  *ptr_scores;        ; // floats
+	// do not add new string parms before ptr_docIds or
+	// after ptr_clusterRecs so serializeMsg() calls still work
+	char  *ptr_docIds         ; // the results, int64_t
+	char  *ptr_scores;        ; // now doubles! so we can have intScores
 	char  *ptr_scoreInfo      ; // transparency info
 	char  *ptr_pairScoreBuf   ; // transparency info
 	char  *ptr_singleScoreBuf ; // transparency info
-	char  *ptr_siteHashList   ; // for m_getSectionStats
+	char  *ptr_numDocsThatHaveFacetList ;
+	// this is now 1-1 with # of query terms!
+	char  *ptr_facetHashList   ; // list of all the facet values in serps
 	char  *ptr_clusterRecs    ; // key_t (might be empty)
 	
-	long   size_docIds;
-	long   size_scores;
-	long   size_scoreInfo;
-	long   size_pairScoreBuf  ;
-	long   size_singleScoreBuf;
-	long   size_siteHashList;
-	long   size_clusterRecs;
+	// do not add new string parms before size_docIds or
+	// after size_clusterRecs so serializeMsg() calls still work
+	int32_t   size_docIds;
+	int32_t   size_scores;
+	int32_t   size_scoreInfo;
+	int32_t   size_pairScoreBuf  ;
+	int32_t   size_singleScoreBuf;
+	int32_t   size_numDocsThatHaveFacetList ;
+	int32_t   size_facetHashList;
+	int32_t   size_clusterRecs;
 
 	// . this is the "string buffer" and it is a variable size
 	// . this whole class is cast to a udp reply, so the size of "buf"
@@ -176,12 +211,12 @@ public:
 };
 
 
-
 class Msg39 {
 
  public:
 
 	Msg39();
+	~Msg39();
 	void reset();
 	void reset2();
 	// register our request handler for Msg39's
@@ -193,7 +228,7 @@ class Msg39 {
 	// retrieves the lists needed as specified by termIds and PosdbTable
 	bool getLists () ;
 	// called when lists have been retrieved, uses PosdbTable to hash lists
-	bool gotLists ( bool updateReadInfo ) ;
+	bool intersectLists ( );//bool updateReadInfo ) ;
 	// this is called after thread exits, or if thread creation failed
 	bool addedLists();
 
@@ -204,6 +239,9 @@ class Msg39 {
 	// . this is used by handler to reconstruct the incoming Query class
 	// . TODO: have a serialize/deserialize for Query class
 	Query       m_tmpq;
+
+	int64_t m_docIdStart ;
+	int64_t m_docIdEnd   ;
 
 	// used to get IndexLists all at once
 	Msg2        m_msg2;
@@ -221,65 +259,69 @@ class Msg39 {
 
 	char       m_debug;
 
-	long m_numDocIdSplits;
+	//int32_t m_numDocIdSplits;
 	bool m_allocedTree;
-	long long m_ddd;
-	long long m_dddEnd;
+	int64_t m_ddd;
+	int64_t m_dddEnd;
 	bool doDocIdSplitLoop();
 
 	// . we hold our IndexLists here for passing to PosdbTable
 	// . one array for each of the tiers
-	IndexList  m_lists [ MAX_QUERY_TERMS ];
+	//IndexList  m_lists [ MAX_QUERY_TERMS ];
+	IndexList *m_lists;
+	SafeBuf m_stackBuf;
 	
 	// used for timing
-	long long  m_startTime;
+	int64_t  m_startTime;
 
 	// this is set if PosdbTable::addLists() had an error
-	long       m_errno;
+	int32_t       m_errno;
 
 	// always use top tree now
 	TopTree    m_tt;
 
 	char       m_boolFlag;
 
-	long       m_firstResultNum;
+	int32_t       m_firstResultNum;
 
-	long long  m_numTotalHits;
+	int64_t  m_numTotalHits;
 
-	long       m_numCensored;
+	int32_t       m_numCensored;
 
 	// for indexdb splitting
 	char      m_paritySplit;
 
-	long        m_bufSize;
+	int32_t        m_bufSize;
 	char       *m_buf;
-	long long  *m_clusterDocIds;
+	int64_t  *m_clusterDocIds;
 	char       *m_clusterLevels;
 	key_t      *m_clusterRecs;
-	long        m_numClusterDocIds;
-	long        m_numVisible;
-	long        m_numDocIds;
+	int32_t        m_numClusterDocIds;
+	int32_t        m_numVisible;
+	int32_t        m_numDocIds;
 	Msg51       m_msg51;
 	bool        m_gotClusterRecs;
-	void        estimateHits   ();
+	bool        controlLoop();
+	int32_t m_phase;
+	void        estimateHitsAndSendReply   ();
 	bool        setClusterRecs ();
-	void        gotClusterRecs ();
+	bool        gotClusterRecs ();
 
 	// hack stuff
 	void *m_tmp;
-	long  m_tmp2;
+	int32_t  m_tmp2;
 	bool  m_blocked;
 	void (*m_callback)( void *state );
 	void  *m_state;
-	long long m_topDocId;
+	int64_t m_topDocId;
 	float     m_topScore;
-	long long m_topDocId2;
+	int64_t m_topDocId2;
 	float     m_topScore2;
 
 	// . for the top 50 algo in seo.cpp
 	// . will be the score of the last result if < 50 results
 	float     m_topScore50;
-	long long m_topDocId50;
+	int64_t m_topDocId50;
 
 	bool  m_inUse;
 };		

@@ -28,29 +28,29 @@ class Msg36 {
 	// . sets errno on error
 	// . "termFreq" should NOT be on the stack in case we block
 	// . sets *termFreq to UPPER BOUND on # of records with that "termId"
-	bool getTermFreq ( char       *coll       ,
-			   long        maxAge     ,
-			   long long   termId     ,
+	bool getTermFreq ( collnum_t collnum,//char       *coll       ,
+			   int32_t        maxAge     ,
+			   int64_t   termId     ,
 			   void       *state      ,
 			   void (* callback)(void *state ) ,
-			   long        niceness = MAX_NICENESS ,
+			   int32_t        niceness = MAX_NICENESS ,
 			   bool        exactCount  = false     ,
 			   bool        incCount    = false     ,
 			   bool        decCount    = false     ,
 			   bool        isSplit     = true);
 
-	long long getTermFreq () { return m_termFreq; };
+	int64_t getTermFreq () { return m_termFreq; };
 
 	// public so C wrapper can call
 	void gotReply ( ) ;
 
 	// we store the recvd termFreq in what this points to
-	long long  m_termFreq ;
+	int64_t  m_termFreq ;
 
 	// info stored in us by Msg37.cpp
 	void *m_this;
-	long  m_i;
-	long  m_j;
+	int32_t  m_i;
+	int32_t  m_j;
 
 	// callback information
 	void  *m_state  ;
@@ -65,21 +65,21 @@ class Msg36 {
 //#else
 //	char m_reply[8];
 //#endif
-	char m_reply[8*MAX_INDEXDB_SPLIT];
+	char m_reply[8*MAX_SHARDS];
 
 	// for sending the request
 //#ifdef SPLIT_INDEXDB
 	//Multicast m_mcast[INDEXDB_SPLIT];
-	Multicast m_mcast[1];//MAX_INDEXDB_SPLIT];
-	long      m_numRequests;
-	long      m_numReplies;
-	long      m_errno;
+	Multicast m_mcast[1];//MAX_SHARDS];
+	int32_t      m_numRequests;
+	int32_t      m_numReplies;
+	int32_t      m_errno;
 	bool      m_isSplit;
 //#else
 //	Multicast m_mcast;
 //#endif
 
-	long      m_niceness;
+	int32_t      m_niceness;
 };
 
 //extern class RdbCache g_qtable;

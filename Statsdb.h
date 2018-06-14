@@ -30,7 +30,7 @@ class Statsdb {
 	// reset m_rdb
 	void reset() { m_rdb.reset(); };
 
-	class Label *getLabel ( long graphHash );
+	class Label *getLabel ( int32_t graphHash );
 
 	// initialize m_rdb
 	bool init( );
@@ -39,8 +39,8 @@ class Statsdb {
 
 	void addDocsIndexed ( ) ;
 
-	long getImgHeight() ;
-	long getImgWidth() ;
+	int32_t getImgHeight() ;
+	int32_t getImgWidth() ;
 
 	// so Process.cpp can turn it off when saving so we do not record
 	// disk writes/reads
@@ -51,42 +51,51 @@ class Statsdb {
 	//   we might be dumping statsdb to disk or something it is possible
 	//   we get an ETRYAGAIN error, so we try to accumulate stats in a
 	//   local buffer in that case
-	bool addStat ( long        niceness ,
+	bool addStat ( int32_t        niceness ,
 		       char       *label    ,
-		       long long   t1       ,
-		       long long   t2       ,
+		       int64_t   t1       ,
+		       int64_t   t2       ,
 		       float       value    , // y-value really, "numBytes"
-		       long        parmHash = 0   ,
+		       int32_t        parmHash = 0   ,
 		       float       oldVal   = 0.0 ,
 		       float       newVal   = 0.0 ,
-		       long        userId32 = 0 );
+		       int32_t        userId32 = 0 );
 	
-	bool makeGIF ( long t1Arg , 
-		       long t2Arg ,
-		       long samples ,
+	bool makeGIF ( int32_t t1Arg , 
+		       int32_t t2Arg ,
+		       int32_t samples ,
 		       // fill in the map key in html into "sb2"
 		       SafeBuf *sb2 ,
 		       void *state ,
 		       void (* callback) (void *state) ,
-		       long userId32 = 0 ) ;
+		       int32_t userId32 = 0 ) ;
 
 	char *plotGraph ( char *pstart ,
 			  char *pend ,
-			  long graphHash ,
-			  class GIFPlotter *plotter ,
-			  long  zoff );
+			  int32_t graphHash ,
+			  //class GIFPlotter *plotter ,
+			  SafeBuf &gw,
+			  int32_t  zoff );
+
+	void drawLine3 ( SafeBuf &sb ,
+			 int32_t x1 , 
+			 int32_t x2 ,
+			 int32_t fy1 , 
+			 int32_t color ,
+			  int32_t width ) ;
 
 	void drawHR ( float z ,
 		      float ymin , 
 		      float ymax ,
-		      class GIFPlotter *plotter ,
+		      //class GIFPlotter *plotter ,
+		      SafeBuf &gw,
 		      class Label *label ,
 		      float zoff ,
-		      long color ) ;
+		      int32_t color ) ;
 
 	bool gifLoop ( ) ;
 	bool processList ( ) ;
-	class StatState *getStatState ( long us ) ;
+	class StatState *getStatState ( int32_t us ) ;
 	// if graphVal is false we graph the count (num ops)
 	bool addPointsFromStatsTable1 ( );
 	bool addPointsFromStatsTable2 ( class Label *label ) ;
@@ -98,19 +107,19 @@ class Statsdb {
 			class StatState *ss , 
 			class Label *label ) ;
 
-	bool addPoint ( long      x         ,
+	bool addPoint ( int32_t      x         ,
 			float     y         ,
-			//long      colorRGB  ,
-			long      graphHash ,
+			//int32_t      colorRGB  ,
+			int32_t      graphHash ,
 			float     weight    ,
 			class StatState *ss ) ;
 
 	bool addEventPointsFromList ( );
-	bool addEventPoint ( long  t1        ,
-			     long  parmHash  ,
+	bool addEventPoint ( int32_t  t1        ,
+			     int32_t  parmHash  ,
 			     float oldVal    ,
 			     float newVal    ,
-			     long  thickness ) ;
+			     int32_t  thickness ) ;
 
 
 	Rdb *getRdb() { return &m_rdb; }
@@ -118,6 +127,10 @@ class Statsdb {
 	Rdb 	  m_rdb;
 	RdbList   m_list;
 	Msg1	  m_msg1;
+
+	// the graphing window. now a bunch of absolute divs in html
+	SafeBuf m_gw;
+	HashTableX m_dupTable;
 
 	SafeBuf m_sb0;
 	SafeBuf m_sb1;
@@ -131,14 +144,14 @@ class Statsdb {
 
 	HashTableX m_labelTable;
 
-	long m_niceness;
+	int32_t m_niceness;
 
 	// pixel boundaries
-	long m_bx;
-	long m_by;
+	int32_t m_bx;
+	int32_t m_by;
 
 	// # of samples in moving avg
-	long m_samples;
+	int32_t m_samples;
 
 	void *m_state;
 	void (*m_callback )(void *state);
@@ -154,8 +167,8 @@ class Statsdb {
 	Msg5 m_msg5;
 
 	// time window to graph
-	long m_t1;
-	long m_t2;
+	int32_t m_t1;
+	int32_t m_t2;
 
 	bool m_init;
 };
@@ -169,9 +182,10 @@ extern class Statsdb g_statsdb;
 class StatKey {
  public:
 	// these two vars make up the key_t!
-	unsigned long m_zero;
-	unsigned long m_labelHash;
-	time_t        m_time1;
+	uint32_t m_zero;
+	uint32_t m_labelHash;
+	// force to 32-bit even though time_t is 64-bit on 64-bit systems
+	int32_t m_time1;
 };
 
 class StatData {
@@ -187,11 +201,11 @@ class StatData {
 	float     getNewVal () { return m_newVal ; };
 	bool      isStatusChange() { return (m_totalOps==0); };
 	bool      isEvent       () { return (m_totalOps==0); };
-	//void      setKey ( long long t1 , unsigned long labelHash ) {
+	//void      setKey ( int64_t t1 , uint32_t labelHash ) {
 	//	m_key.n1 = t1; m_key.n0 = labelHash; };
-	//long      getLabelHash () { return (long)m_labelHash; };
-	//long      getParmHash  () { return (long)m_labelHash; };
-	//long      getTime1     () { return m_time1; };
+	//int32_t      getLabelHash () { return (int32_t)m_labelHash; };
+	//int32_t      getParmHash  () { return (int32_t)m_labelHash; };
+	//int32_t      getTime1     () { return m_time1; };
 };
 
 #endif

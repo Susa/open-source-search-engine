@@ -8,10 +8,12 @@ Summary::Summary()
             : m_summaryLocs(m_summaryLocBuf, 
 			    MAX_SUMMARY_LOCS*sizeof(uint64_t)),
 	      m_summaryLocsPops(m_summaryLocPopsBuf, 
-				MAX_SUMMARY_LOCS*sizeof(long)) {
+				MAX_SUMMARY_LOCS*sizeof(int32_t)) {
 	//m_buf = NULL;
 	m_bitScoresBuf = NULL;
 	m_bitScoresBufSize = 0;
+	m_wordWeights = NULL;
+	m_buf4 = NULL;
 	reset();
 }
 
@@ -27,6 +29,7 @@ void Summary::reset() {
 		m_bitScoresBufSize = 0;
 	}
 	m_summaryLen = 0;
+	m_displayLen = 0;
 	//m_bufMaxLen = 0;
 	//m_bufLen = 0;
 	//m_buf = NULL;
@@ -35,6 +38,15 @@ void Summary::reset() {
 	m_numExcerpts = 0;
 	m_summaryLocs.reset();
 	m_summaryLocsPops.reset();
+	if ( m_wordWeights && m_wordWeights != (float *)m_tmpBuf ) {
+		mfree ( m_wordWeights , m_wordWeightSize , "sumww");
+		m_wordWeights = NULL;
+	}
+	m_wordWeights = NULL;
+	if ( m_buf4 && m_buf4 != m_tmpBuf4 ) {
+		mfree ( m_buf4 , m_buf4Size , "ssstkb" );
+		m_buf4 = NULL;
+	}
 }
 
 
@@ -51,16 +63,17 @@ bool Summary::set2 ( Xml      *xml                ,
 		     Sections *sections           ,
 		     Pos      *pos                ,
 		     Query    *q                  ,
-		     long long *termFreqs         ,
+		     int64_t *termFreqs         ,
 		     float    *affWeights         , // 1-1 with qterms
 		     //char     *coll               ,
-		     //long      collLen            ,
+		     //int32_t      collLen            ,
 		     bool      doStemming         ,
-		     long      maxSummaryLen      , 
-		     long      maxNumLines        ,
-		     long      maxNumCharsPerLine ,
-		     //long      bigSampleRadius    ,
-		     //long      bigSampleMaxLen    ,
+		     int32_t      maxSummaryLen      , 
+		     int32_t      maxNumLines        ,
+		     int32_t      numDisplayLines    ,
+		     int32_t      maxNumCharsPerLine ,
+		     //int32_t      bigSampleRadius    ,
+		     //int32_t      bigSampleMaxLen    ,
 		     bool      ratInSummary       ,
 		     //TitleRec *tr                 ,
 		     Url      *f                  ,
@@ -72,7 +85,7 @@ bool Summary::set2 ( Xml      *xml                ,
 		     //float    *queryProximityScore,
 		     Matches  *matches            ,
 		     char     *titleBuf           ,
-		     long      titleBufLen        ) {
+		     int32_t      titleBufLen        ) {
 
 	//m_proximityScore = -1;
 
@@ -81,12 +94,15 @@ bool Summary::set2 ( Xml      *xml                ,
 	// to see if it has all the query terms...
 	//if ( maxNumLines <= 0 ) return true;
 
+	m_numDisplayLines = numDisplayLines;
+	m_displayLen      = 0;
+
 	//m_useDateLists   = useDateLists;
 	//m_exclDateList   = exclDateList;
 	//m_begPubDateList = begPubDateList;
 	//m_endPubDateList = endPubDateList;
 	//m_diversity      = 1.0;
-	// long long start = gettimeofdayInMilliseconds();
+	// int64_t start = gettimeofdayInMilliseconds();
 	// assume we got maxnumlines of summary
 	if ( (maxNumCharsPerLine+6)*maxNumLines > maxSummaryLen ) {
 		//maxNumCharsPerLine = (maxSummaryLen-10)/maxNumLines;
@@ -96,7 +112,7 @@ bool Summary::set2 ( Xml      *xml                ,
 			s_flag = 0;
 			log("query: Warning. "
 			    "Max summary excerpt length decreased to "
-			    "%li chars because max summary excerpts and "
+			    "%"INT32" chars because max summary excerpts and "
 			    "max summary length are too big.",
 			    maxNumCharsPerLine);
 		}
@@ -107,17 +123,17 @@ bool Summary::set2 ( Xml      *xml                ,
 	// . leave room for tailing \0
 	if ( maxSummaryLen >= MAX_SUMMARY_LEN ) {
 		g_errno = EBUFTOOSMALL;
-		return log("query: Summary too big to hold in buffer of %li "
-			   "bytes.",(long)MAX_SUMMARY_LEN);
+		return log("query: Summary too big to hold in buffer of %"INT32" "
+			   "bytes.",(int32_t)MAX_SUMMARY_LEN);
 	}
 
 	// . hash query word ids into a small hash table
 	// . we use this to see what words in the document are query terms
-	//long qscores [ MAX_QUERY_TERMS ];
+	//int32_t qscores [ MAX_QUERY_TERMS ];
 
 	// and if we found each query term or not
-	//long nt  = q->getNumNonFieldedSingletonTerms();
-	//long nqt = q->getNumTerms();
+	//int32_t nt  = q->getNumNonFieldedSingletonTerms();
+	//int32_t nqt = q->getNumTerms();
 
 	// do not overrun the final*[] buffers
 	if ( maxNumLines > 256 ) { 
@@ -140,19 +156,29 @@ bool Summary::set2 ( Xml      *xml                ,
 					   //bigSampleRadius,
 					   maxSummaryLen );
 	
-	/*long long end = gettimeofdayInMilliseconds();
+	/*int64_t end = gettimeofdayInMilliseconds();
 	if ( end - start > 2 )
-		log ( LOG_WARN,"summary: took %lli ms to finish big hack",
+		log ( LOG_WARN,"summary: took %"INT64" ms to finish big hack",
 		      end - start );
 		      start = gettimeofdayInMilliseconds();*/
 	//
+	int32_t need1 = q->m_numWords * sizeof(float);
+	m_wordWeightSize = need1;
+	if ( need1 < 128 )
+		m_wordWeights = (float *)m_tmpBuf;
+	else
+		m_wordWeights = (float *)mmalloc ( need1 , "wwsum" );
+	if ( ! m_wordWeights ) return false;
+
+
 
 	// zero out all word weights
-	for ( long i = 0 ; i < q->m_numWords; i++ )
+	for ( int32_t i = 0 ; i < q->m_numWords; i++ )
 		m_wordWeights[i] = 0.0;
 
 	// query terms
-	long numTerms = q->getNumTerms();
+	int32_t numTerms = q->getNumTerms();
+
 	// . compute our word weights wrt each query. words which are more rare
 	//   have a higher weight. We use this to weight the terms importance 
 	//   when generating the summary.
@@ -160,7 +186,7 @@ bool Summary::set2 ( Xml      *xml                ,
 	// . used in setSummaryScores() for scoring summaries
 	if ( termFreqs && q->m_numWords > 1 ) {
 		float maxTermFreq = 0;
-		for ( long i = 0 ; i < numTerms ; i++ ) {
+		for ( int32_t i = 0 ; i < numTerms ; i++ ) {
 			// www.abc.com --> treat www.abc as same term freq
 			// 'www.infonavit.gob.mx do de carne? mxa'
 			//if(q->m_qterms[i].m_isPhrase) continue;
@@ -169,25 +195,34 @@ bool Summary::set2 ( Xml      *xml                ,
 		}
 		maxTermFreq++; //don't div by 0!
 
-		for ( long i = 0 ; i < numTerms ; i++ ) {
+		for ( int32_t i = 0 ; i < numTerms ; i++ ) {
 			//if(q->m_qterms[i].m_isPhrase) continue;
 			// if this is a phrase the other words following
 			// the first word will have a word weight of 0
 			// so should be ignored for that...
-			long ndx = q->m_qterms[i].m_qword - q->m_qwords;
+			int32_t ndx = q->m_qterms[i].m_qword - q->m_qwords;
 			// oh it is already complemented up here
 			m_wordWeights[ndx] = 1.0 -
 				((float)termFreqs[i] / maxTermFreq);
 			//make sure everything has a little weight:
 			if(m_wordWeights[ndx] < .10) m_wordWeights[ndx] = .10;
 			//log(LOG_WARN,
-			//"query word num %li termnum %li freq %f max %f",
+			//"query word num %"INT32" termnum %"INT32" freq %f max %f",
 			//ndx,i,m_wordWeights[ndx],maxTermFreq);
 		}
 	} 
 	else {
-		for ( long i = 0 ; i < q->m_numWords; i++ )
+		for ( int32_t i = 0 ; i < q->m_numWords; i++ )
 			m_wordWeights[i] = 1.0;
+	}
+
+	if ( g_conf.m_logDebugSummary ) {
+		for ( int32_t i = 0 ; i < q->m_numWords; i++ ) {
+			int64_t tf = -1;
+			if ( termFreqs ) tf = termFreqs[i];
+			log("sum: u=%s wordWeights[%"INT32"]=%f tf=%"INT64"",
+			    f->m_url,i,m_wordWeights[i],tf);
+		}
 	}
 
 	// convenience
@@ -200,10 +235,10 @@ bool Summary::set2 ( Xml      *xml                ,
 	bool hadEllipsis = false;
 
 	// set the max excerpt len to the max summary excerpt len
-	long maxExcerptLen = m_maxNumCharsPerLine;
+	int32_t maxExcerptLen = m_maxNumCharsPerLine;
 
-	long lastNumFinal = 0;
-	long maxLoops = 1024;
+	int32_t lastNumFinal = 0;
+	int32_t maxLoops = 1024;
 	char *p, *pend;
 
 	// if just computing absScore2...
@@ -214,15 +249,29 @@ bool Summary::set2 ( Xml      *xml                ,
 	pend = m_summary + maxSummaryLen;
 	m_numExcerpts = 0;
 
+	int32_t need2 = (1+1+1) * m_q->m_numWords;
+	m_buf4Size = need2;
+	if ( need2 < 128 )
+		m_buf4 = m_tmpBuf4;
+	else
+		m_buf4 = (char *)mmalloc ( need2 , "stkbuf" );
+	if ( ! m_buf4 ) return false;
+	char *x = m_buf4;
+	char *retired = x;
+	x += m_q->m_numWords;
+	char *maxGotIt = x;
+	x += m_q->m_numWords;
+	char *gotIt = x;
+
 	// . the "maxGotIt" count vector accumulates into "retired"
 	// . that is how we keep track of what query words we used for previous
 	//   summary excerpts so we try to get diversified excerpts with 
 	//   different query terms/words in them
-	char retired  [ MAX_QUERY_WORDS ];
+	//char retired  [ MAX_QUERY_WORDS ];
 	memset ( retired, 0, m_q->m_numWords * sizeof(char) );
 
 	// some query words are already matched in the title
-	for ( long i = 0 ; i < m_q->m_numWords ; i++ )
+	for ( int32_t i = 0 ; i < m_q->m_numWords ; i++ )
 		if ( matches->m_qwordFlags[i] & MF_TITLEGEN )
 			retired [ i ] = 1;
 
@@ -232,15 +281,20 @@ bool Summary::set2 ( Xml      *xml                ,
 	// highest scoring window around each term. And then find the highest
 	// of those over all the matching terms.
 	//
-	for ( long numFinal = 0; numFinal < maxNumLines; numFinal++ ){
+	int32_t numFinal;
+	for ( numFinal = 0; numFinal < maxNumLines; numFinal++ ){
+
+		if ( numFinal == m_numDisplayLines )
+			m_displayLen = p - m_summary;
+
 		// reset these at the top of each loop
 		Match     *maxm;
-		long long  maxScore = 0;
-		long       maxa = 0;
-		long       maxb = 0;
-		long       maxi  = -1;
-		long       lasta = -1;
-		char       maxGotIt [ MAX_QUERY_WORDS ];
+		int64_t  maxScore = 0;
+		int32_t       maxa = 0;
+		int32_t       maxb = 0;
+		int32_t       maxi  = -1;
+		int32_t       lasta = -1;
+		//char       maxGotIt [ MAX_QUERY_WORDS ];
 
 		if(lastNumFinal == numFinal) {
 			if(maxLoops-- <= 0) {
@@ -252,13 +306,13 @@ bool Summary::set2 ( Xml      *xml                ,
 			}
 		}
 		lastNumFinal = numFinal;
-		// long long stget = gettimeofdayInMilliseconds();
+		// int64_t stget = gettimeofdayInMilliseconds();
 		// does the max that we found have a new query word that was
 		// not already in the summary?
-		//long maxFoundNew = 0;
+		//int32_t maxFoundNew = 0;
 		// loop through all the matches and see which is best
-		for ( long i = 0 ; i < matches->m_numMatches ; i++ ) {
-			long       a , b;
+		for ( int32_t i = 0 ; i < matches->m_numMatches ; i++ ) {
+			int32_t       a , b;
 			// reset lasta if we changed words class
 			if ( i > 0 && matches->m_matches[i-1].m_words !=
 			     matches->m_matches[i].m_words )
@@ -276,14 +330,14 @@ bool Summary::set2 ( Xml      *xml                ,
 			if ( skip ) continue;
 
 			// ask him for the query words he matched
-			char gotIt [ MAX_QUERY_WORDS ];
+			//char gotIt [ MAX_QUERY_WORDS ];
 			// clear it for him
 			memset ( gotIt, 0, m_q->m_numWords * sizeof(char) );
 
 			// . get score of best window around this match
 			// . do not allow left post of window to be <= lasta to
 			//   avoid repeating the same window.
-			long long score = getBestWindow (matches, 
+			int64_t score = getBestWindow (matches, 
 							 i, 
 							 &lasta,
 							 &a, &b, 
@@ -299,16 +353,16 @@ bool Summary::set2 ( Xml      *xml                ,
 			char *xp = buf;
 			if ( i == 0 )
 				log (LOG_WARN,"=-=-=-=-=-=-=-=-=-=-=-=-=-=-=");
-			sprintf(xp, "score=%08li a=%05li b=%05li ",
-				(long)score,(long)a,(long)b);
+			sprintf(xp, "score=%08"INT32" a=%05"INT32" b=%05"INT32" ",
+				(int32_t)score,(int32_t)a,(int32_t)b);
 			xp += gbstrlen(xp);
-			for ( long j = a; j < b; j++ ){
-				//long s = scores->m_scores[j];
-				long s = 0;
+			for ( int32_t j = a; j < b; j++ ){
+				//int32_t s = scores->m_scores[j];
+				int32_t s = 0;
 				if ( s < 0 ) continue;
 				char e = 1;
-				long len = words->getWordLen(j);
-				for(long k=0;k<len;k +=e){
+				int32_t len = words->getWordLen(j);
+				for(int32_t k=0;k<len;k +=e){
 					char c = words->m_words[j][k];
 					//if ( is_binary( c ) ) continue;
 					*xp = c;
@@ -316,7 +370,7 @@ bool Summary::set2 ( Xml      *xml                ,
 				}
 				//p += gbstrlen(p);
 				if ( s == 0 ) continue;
-				sprintf ( xp ,"(%li)",s);
+				sprintf ( xp ,"(%"INT32")",s);
 				xp += gbstrlen(xp);
 			}
 			log (LOG_WARN,"query: summary: %s", buf);
@@ -330,14 +384,14 @@ bool Summary::set2 ( Xml      *xml                ,
 			  char *bufPtrEnd = p + MAX_SUMMARY_LEN;
 			  if ( i == 0 )
 			  log (LOG_WARN,"=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=");
-			  long len = 0;
+			  int32_t len = 0;
 			  Words *ww  = matches->m_matches[i].m_words;
 			  //Sections *ss = matches->m_matches[i].m_sections;
 			  //if ( ss->m_numSections <= 0 ) ss = NULL;
 			  //len=pos->filter(bufPtr, bufPtrEnd, ww, a, b, NULL);
-			  //log(LOG_WARN,"summary: %li) %s - %lli",i,bufPtr, 
+			  //log(LOG_WARN,"summary: %"INT32") %s - %"INT64"",i,bufPtr, 
 			  //score);
-			  log(LOG_WARN,"summary: %li) %s - %lli",i,bufPtr, 
+			  log(LOG_WARN,"summary: %"INT32") %s - %"INT64"",i,bufPtr, 
 			  score);
 			*/
 
@@ -352,14 +406,14 @@ bool Summary::set2 ( Xml      *xml                ,
 			maxb     = b;
 			maxScore = score;
 			// save this too
-			memcpy ( maxGotIt , gotIt , m_q->m_numWords );
+			gbmemcpy ( maxGotIt , gotIt , m_q->m_numWords );
 
 		}
 	
 		// retire the query words in the winning summary
 
 		
-		//log( LOG_WARN,"summary: took %lli ms to finish getbestwindo",
+		//log( LOG_WARN,"summary: took %"INT64" ms to finish getbestwindo",
 		//    gettimeofdayInMilliseconds() - stget );
 
 
@@ -376,13 +430,13 @@ bool Summary::set2 ( Xml      *xml                ,
 		Words         *ww      = maxm->m_words;
 		Sections      *ss      = maxm->m_sections;
 		// we now use "m_swbits" for the summary bits since they are
-		// of size sizeof(swbit_t), a short at this point
+		// of size sizeof(swbit_t), a int16_t at this point
 		swbit_t       *bb      = maxm->m_bits->m_swbits;
 
 		// this should be impossible
 		if ( maxa > ww->m_numWords || maxb > ww->m_numWords ){
 			log ( LOG_WARN,"query: summary starts or ends after "
-			      "document is over! maxa=%li maxb=%li nw=%li",
+			      "document is over! maxa=%"INT32" maxb=%"INT32" nw=%"INT32"",
 			      maxa, maxb, ww->m_numWords );
 			maxa = ww->m_numWords - 1;
 			maxb = ww->m_numWords;
@@ -408,11 +462,11 @@ bool Summary::set2 ( Xml      *xml                ,
 
 		if ( needEllipsis ) {
 			// break out if no room for "..."
-			//long elen;
+			//int32_t elen;
 			if ( p + 4 + 2 > pend ) break;
 			// space first?
 			if ( p > m_summary ) *p++ = ' ';
-			memcpy ( p , "... " , 4 );
+			gbmemcpy ( p , "... " , 4 );
 			p += 4;
 		}
 
@@ -439,7 +493,7 @@ bool Summary::set2 ( Xml      *xml                ,
 		// . removes back to back spaces
 		// . converts html entities
 		// . filters in stores words in [a,b) interval
-		long len = pos->filter(p, pend, ww, maxa, maxb, ss);
+		int32_t len = pos->filter(p, pend, ww, maxa, maxb, ss);
 
 		// break out if did not fit
 		if ( len == 0 ) break;
@@ -461,7 +515,7 @@ bool Summary::set2 ( Xml      *xml                ,
 		p += len;
 
 		// now we just indicate which query terms we got
-		for ( long i = 0 ; i < m_q->m_numWords ; i++ ) {
+		for ( int32_t i = 0 ; i < m_q->m_numWords ; i++ ) {
 			// do not breach
 			if ( retired[i] >= 100 ) continue;
 			retired [ i ] += maxGotIt [ i ];
@@ -471,7 +525,7 @@ bool Summary::set2 ( Xml      *xml                ,
 		// zero out scores of the winning sample so we don't get them 
 		// again. use negative one billion to ensure that we don't get
 		// them again
-		for ( long j = maxa ; j < maxb ; j++ )
+		for ( int32_t j = maxa ; j < maxb ; j++ )
 			// mark it as used
 			bb[j] |= D_USED;
 
@@ -479,7 +533,7 @@ bool Summary::set2 ( Xml      *xml                ,
 		// to add an ellipsis
 		if ( needEllipsis ) {
 			if ( p + 4 + 2 > pend ) break;
-			memcpy ( p , " ..." , 4 );
+			gbmemcpy ( p , " ..." , 4 );
 			p += 4;
 		}
 
@@ -503,15 +557,18 @@ bool Summary::set2 ( Xml      *xml                ,
 	
 	skip:
 		// zero out the scores so they will not be used in others
-		for ( long j = maxa ; j < maxb ; j++ )
+		for ( int32_t j = maxa ; j < maxb ; j++ )
 			// mark it
 			bb[j] |= D_USED;
 	}
 
+	if ( numFinal <= m_numDisplayLines )
+		m_displayLen = p - m_summary;
+
 	/*end = gettimeofdayInMilliseconds();
 	if ( end - start > 10 )
-		log ( LOG_WARN,"summary: took %llims to finish doing summary "
-		      "numMatches=%li maxNumLines=%li url=%s", end - start,
+		log ( LOG_WARN,"summary: took %"INT64"ms to finish doing summary "
+		      "numMatches=%"INT32" maxNumLines=%"INT32" url=%s", end - start,
 		      matches.m_numMatches, maxNumLines, f->m_url );
 		      start = gettimeofdayInMilliseconds();*/
 
@@ -530,18 +587,32 @@ bool Summary::set2 ( Xml      *xml                ,
 			m_summaryExcerptLen[0] = p - m_summary;
 			m_numExcerpts = 1;
 		}
+		// in this case we only have one summary line
+		if ( m_numDisplayLines > 0 )
+			m_displayLen = p - m_summary;
+	}
+
+	// free the mem we used if we allocated it
+	if ( m_buf4 && m_buf4 != m_tmpBuf4 ) {
+		mfree ( m_buf4 , m_buf4Size , "ssstkb" );
+		m_buf4 = NULL;
 	}
 
 
 	// If we still didn't find a summary, get the default summary
-	if ( p == m_summary )
+	if ( p == m_summary ) {
 		// then return the default summary
-		return getDefaultSummary ( xml,
-					   words,
-					   sections,
-					   pos,
-					   //bigSampleRadius,
-					   maxSummaryLen );
+		bool status = getDefaultSummary ( xml,
+						  words,
+						  sections,
+						  pos,
+						  //bigSampleRadius,
+						  maxSummaryLen );
+		if ( m_numDisplayLines > 0 )
+			m_displayLen = m_summaryLen;
+		
+		return status;
+	}
 
 	// if we don't find a summary, theres no need to NULL terminate
 	if ( p != m_summary ) *p++ = '\0';
@@ -565,9 +636,9 @@ bool Summary::set2 ( Xml      *xml                ,
 // . "max excerpts". we truncate the summary if we need to.
 //   XmlDoc.cpp::getSummary(), likes to request more excerpts than are 
 //   actually displayed so it has a bigger summary for deduping purposes.
-long Summary::getSummaryLen ( long maxLines ) {
-	long len = 0;
-	for ( long i = 0 ; i < m_numExcerpts && i < maxLines ; i++ ) 
+int32_t Summary::getSummaryLen ( int32_t maxLines ) {
+	int32_t len = 0;
+	for ( int32_t i = 0 ; i < m_numExcerpts && i < maxLines ; i++ ) 
 		len += m_summaryExcerptLen[i];
 	return len;
 }
@@ -582,33 +653,33 @@ long Summary::getSummaryLen ( long maxLines ) {
 // . window is defined by the half-open interval [a,b) where a and b are 
 //   word #'s in the Words array indicated by match #m
 // . return -1 and set g_errno on error
-long long Summary::getBestWindow ( Matches *matches       ,
-				   long     mm            ,
-				   long    *lasta         ,
-				   long    *besta         ,
-				   long    *bestb         ,
+int64_t Summary::getBestWindow ( Matches *matches       ,
+				   int32_t     mm            ,
+				   int32_t    *lasta         ,
+				   int32_t    *besta         ,
+				   int32_t    *bestb         ,
 				   char    *gotIt         ,
 				   char    *retired       ,
-				   long     maxExcerptLen ) {
+				   int32_t     maxExcerptLen ) {
 
 
 	// get the window around match #mm
 	Match *m = &matches->m_matches[mm];
 	// what is the word # of match #mm?
-	long matchWordNum = m->m_wordNum;
+	int32_t matchWordNum = m->m_wordNum;
 
 	// what Words/Pos/Bits classes is this match in?
 	Words         *words   = m->m_words;
 	Section      **sp      = NULL;
-	long          *pos     = m->m_pos->m_pos;
+	int32_t          *pos     = m->m_pos->m_pos;
 	// use "m_swbits" not "m_bits", that is what Bits::setForSummary() uses
 	swbit_t       *bb      = m->m_bits->m_swbits;
 
-	// shortcut
+	// int16_tcut
 	if ( m->m_sections ) sp = m->m_sections->m_sectionPtrs;
 
-	long            nw        = words->getNumWords();
-	long long      *wids      = words->getWordIds();
+	int32_t            nw        = words->getNumWords();
+	int64_t      *wids      = words->getWordIds();
 	nodeid_t       *tids      = words->getTagIds();
 
 	// . sanity check
@@ -625,7 +696,7 @@ long long Summary::getBestWindow ( Matches *matches       ,
 	// . we NULLify the section ptrs if we already used the word in another
 	//   summary.
 	// . google seems to index SEC_MARQUEE, so i took that out of here
-	long badFlags = SEC_SCRIPT|SEC_STYLE|SEC_SELECT|SEC_IN_TITLE;
+	int32_t badFlags = SEC_SCRIPT|SEC_STYLE|SEC_SELECT|SEC_IN_TITLE;
 	if ( (bb[matchWordNum] & D_USED) || 
 	     ( sp && (sp[matchWordNum]->m_flags & badFlags) ) ) {
 		// assume no best window
@@ -638,14 +709,14 @@ long long Summary::getBestWindow ( Matches *matches       ,
 	// . "a" is the left fence post of the window (it is a word # in Words)
 	// . go to the left as far as we can 
 	// . thus we decrement "a"
-	long a    = matchWordNum;
+	int32_t a    = matchWordNum;
 	// "posa" is the character position of the END of word #a
-	long posa = pos[a+1];
-	long firstFrag = -1;
+	int32_t posa = pos[a+1];
+	int32_t firstFrag = -1;
 	bool startOnQuote = false;
 	bool goodStart = false;
-	long wordCount = 0;
-	// . decrease "a" as long as we stay within maxNumCharsPerLine
+	int32_t wordCount = 0;
+	// . decrease "a" as int32_t as we stay within maxNumCharsPerLine
 	// . avoid duplicating windows by using "lasta", the last "a" of the
 	//   previous call to getBestWindow(). This can happen if our last
 	//   central query term was close to this one.
@@ -710,9 +781,9 @@ long long Summary::getBestWindow ( Matches *matches       ,
 
 	// remember, b is not included in the summary, the summary is [a,b-1]
 	// remember to include all words in a matched phrase
-	long b = matchWordNum + m->m_numWords ;
-	long endQuoteWordNum = -1;
-	long numTagsCrossed = 0;
+	int32_t b = matchWordNum + m->m_numWords ;
+	int32_t endQuoteWordNum = -1;
+	int32_t numTagsCrossed = 0;
 	for ( ; b <= nw; b++ ){
 		if ( b == nw ) break;
 		if ( pos[b+1] - pos[a] >= maxExcerptLen ) break;
@@ -762,45 +833,46 @@ long long Summary::getBestWindow ( Matches *matches       ,
 		
 	}
 
-	// a shortcut
+	// a int16_tcut
 	Match *ms = matches->m_matches;
 	// make m_matches.m_matches[mi] the first match in our [a,b) window
-	long mi ;
+	int32_t mi ;
 	// . the match at the center of the window is match #"mm", so that
 	//   matches->m_matches[mm] is the Match class
-	// . set "mi" to it and back up "mi" as long as >= a
-	for ( mi = mm ; mi >= 0 && ms[mi-1].m_wordNum >=a ; mi-- ) ;
+	// . set "mi" to it and back up "mi" as int32_t as >= a
+	for ( mi = mm ; mi > 0 && ms[mi-1].m_wordNum >=a ; mi-- ) ;
 
 	// now get the score of this excerpt. Also mark all the represented 
 	// query words. Mark the represented query words in the array that
 	// comes to us. also mark how many times the same word is repeated in
 	// this summary.
-	long long score = 0LL;
+	int64_t score = 0LL;
 	// is a url contained in the summary, that looks bad! punish!
 	bool hasUrl = false;
 	// the word count we did above was just an approximate. count it right
 	wordCount = 0;
 
 	// for debug
-	char buf[5000];
-	char *xp = buf;
+	//char buf[5000];
+	//char *xp = buf;
+	SafeBuf xp;
 
 	// wtf?
 	if ( b > nw ) b = nw;
 
 	// first score from the starting match down to a, including match
-	for ( long i = a ; i < b ; i++ ) {
+	for ( int32_t i = a ; i < b ; i++ ) {
 
 		// debug print out
 		if ( g_conf.m_logDebugSummary ) {
-			long len = words->getWordLen(i);
+			int32_t len = words->getWordLen(i);
 			char cs;
-			for(long k=0;k<len; k+=cs ) {
+			for(int32_t k=0;k<len; k+=cs ) {
 				char *c = words->m_words[i]+k;
 				cs = getUtf8CharSize(c);
 				if ( is_binary_utf8 ( c ) ) continue;
-				memcpy ( xp , c , cs );
-				xp += cs;
+				xp.safeMemcpy ( c , cs );
+				xp.nullTerm();
 			}
 		}
 
@@ -810,17 +882,17 @@ long long Summary::getBestWindow ( Matches *matches       ,
 		// don't count just numeric words
 		if ( words->isNum(i) ) continue;
 		// check if there is a url. best way to check for '://'
-		if ( !wids[i] ){
+		if ( wids && !wids[i] ){
 			char *wrd = words->m_words[i];
-			long  wrdLen = words->m_wordLens[i];
+			int32_t  wrdLen = words->m_wordLens[i];
 			if ( wrdLen == 3 &&
 			     wrd[0] == ':' && wrd[1] == '/' &&  wrd[2] == '/' )
 				hasUrl = true;
 		}
 		// get the score
-		//long t = wscores[i];
+		//int32_t t = wscores[i];
 		// just make every word 100 pts
-		long t = 100;
+		int32_t t = 100;
 		// penalize it if in one of these sections
 		if ( bb[i] & ( D_IN_PARENS     | 
 			       D_IN_HYPERLINK  | 
@@ -839,8 +911,7 @@ long long Summary::getBestWindow ( Matches *matches       ,
 
 		// print the score, "t"
 		if ( g_conf.m_logDebugSummary ) {
-			sprintf ( xp ,"(%li)",t);
-			xp += gbstrlen(xp);
+			xp.safePrintf("(%"INT32")",t);
 		}
 
 		// skip if not wid
@@ -858,7 +929,7 @@ long long Summary::getBestWindow ( Matches *matches       ,
 		// advance it
 		mi++;
 		// which query word # does it match
-		long qwn = next->m_qwordNum;
+		int32_t qwn = next->m_qwordNum;
 
 		if ( qwn < 0 || qwn >= m_q->m_numWords ){char*xx=NULL;*xx=0;}
 
@@ -867,7 +938,7 @@ long long Summary::getBestWindow ( Matches *matches       ,
 		// add 100000 per match
 		t = 100000;
 		// weight based on tf, goes from 0.1 to 1.0
-		t = (long)((float)t * m_wordWeights [ qwn ]);
+		t = (int32_t)((float)t * m_wordWeights [ qwn ]);
 		// if it is a query stop word, make it 10000 pts
 		if ( m_q->m_qwords[qwn].m_isQueryStopWord ) t = 0;//10000;
 
@@ -880,15 +951,15 @@ long long Summary::getBestWindow ( Matches *matches       ,
 		score += t;
 
 		if ( g_conf.m_logDebugSummary ) {
-			sprintf ( xp ,"[%li]",t);
-			xp += gbstrlen(xp);
+			xp.safePrintf ("[%"INT32"]{qwn=%"INT32",ww=%f}",t,qwn,
+				       m_wordWeights[qwn]);
 		}
 
 		// inc the query word count for this window
 		if ( gotIt[qwn] < 100 ) gotIt[qwn]++;
 	}
 
-	long oldScore = score;
+	int32_t oldScore = score;
 	
 	// apply the bonus if it starts or a sentence
 	// only apply if the score is positive and if the wordcount is decent
@@ -919,8 +990,9 @@ long long Summary::getBestWindow ( Matches *matches       ,
 
 	// show it
 	if ( g_conf.m_logDebugSummary )
-		logf(LOG_DEBUG,"score=%08li prescore=%08li a=%05li b=%05li %s",
-		     (long)score,oldScore,(long)a,(long)b,buf);
+		logf(LOG_DEBUG,"score=%08"INT32" prescore=%08"INT32" a=%05"INT32" b=%05"INT32" %s",
+		     (int32_t)score,oldScore,(int32_t)a,(int32_t)b,
+		     xp.getBufStart());
 
 	// set lasta, besta, bestb
 	*lasta = a;
@@ -935,7 +1007,7 @@ bool Summary::getDefaultSummary ( Xml    *xml,
 				  Words  *words,
 				  Sections *sections,
 				  Pos    *pos,
-				  long    maxSummaryLen ){
+				  int32_t    maxSummaryLen ){
 
 	char *p    = m_summary;
 	if (MAX_SUMMARY_LEN < maxSummaryLen) 
@@ -954,6 +1026,10 @@ bool Summary::getDefaultSummary ( Xml    *xml,
 		m_summaryLen = xml->getMetaContent(p,maxSummaryLen,
 						   "description",11);
 
+
+	if ( m_numDisplayLines > 0 )
+		m_displayLen = m_summaryLen;
+
 	if ( m_summaryLen > 0 ) {
 		m_summaryExcerptLen[0] = m_summaryLen;
 		m_numExcerpts = 1;
@@ -968,18 +1044,18 @@ bool Summary::getDefaultSummary ( Xml    *xml,
 	bool inStyle  = false;
 	int scoreMult = 1;
 	char *pend = m_summary + maxSummaryLen - 2;
-	long start = -1,  numConsecutive = 0;
-	long bestStart = -1, bestEnd = -1, longestConsecutive = 0;
-	long lastAlnum = -1;
+	int32_t start = -1,  numConsecutive = 0;
+	int32_t bestStart = -1, bestEnd = -1, longestConsecutive = 0;
+	int32_t lastAlnum = -1;
 	// google seems to index SEC_MARQUEE, so i took that out of here
-	long badFlags = SEC_SCRIPT|SEC_STYLE|SEC_SELECT|SEC_IN_TITLE;
-	// shortcut
+	int32_t badFlags = SEC_SCRIPT|SEC_STYLE|SEC_SELECT|SEC_IN_TITLE;
+	// int16_tcut
 	nodeid_t  *tids = words->m_tagIds;
-	long long *wids = words->getWordIds();
+	int64_t *wids = words->getWordIds();
 	// get the section ptr array 1-1 with the words, "sp"
 	Section **sp = NULL;
 	if ( sections ) sp = sections->m_sectionPtrs;
-	for (long i = 0;i < words->getNumWords(); i++){
+	for (int32_t i = 0;i < words->getNumWords(); i++){
 		// skip if in bad section
 		if ( sp && (sp[i]->m_flags & badFlags) ) continue;
 		if (start > 0 && bestStart == start &&
@@ -1041,7 +1117,7 @@ bool Summary::getDefaultSummary ( Xml    *xml,
 		numConsecutive = 0;
 	}
 	if (bestStart >= 0 && bestEnd > bestStart){
-		long len = pos->filter(p, pend-10, words, 
+		int32_t len = pos->filter(p, pend-10, words, 
 				       bestStart, 
 				       bestEnd, 
 				       sections);//cores);
@@ -1049,13 +1125,17 @@ bool Summary::getDefaultSummary ( Xml    *xml,
 		if ( len > 0 && p + 3 + 2 < pend ){
 			// space first?
 			if ( p > m_summary ) *p++ = ' ';
-			memcpy ( p , "..." , 3 );
+			gbmemcpy ( p , "..." , 3 );
 			p += 3;
 		}
 		// NULL terminate
 		*p++ = '\0';
 		// set length
 		m_summaryLen = p - m_summary;
+
+		if ( m_numDisplayLines > 0 )
+			m_displayLen = m_summaryLen;
+
 		if ( m_summaryLen > 50000 ) { char*xx=NULL;*xx=0; }
 		return true;
 	}
@@ -1089,31 +1169,31 @@ bool Summary::scanForLocations ( ) {
 		ww.act();
 		
 		char *phrasePtr = ww.getPhrasePtr();
-		long  phraseLen = ww.getPhraseLen();
-		long  numPhraseWords = ww.getNumWords();
+		int32_t  phraseLen = ww.getPhraseLen();
+		int32_t  numPhraseWords = ww.getNumWords();
 		if ( numPhraseWords == 0 ) continue;
 
 		// see if buf phrase is a place
-                long placePop = getPlacePop( phrasePtr, phraseLen);
+                int32_t placePop = getPlacePop( phrasePtr, phraseLen);
 		if ( placePop > 50000 ) {
                         uint64_t place = hash64d( phrasePtr, phraseLen);
 			if (place == 0) continue;
 
-			log(LOG_DEBUG, "query: found place:'%s' (len:%ld) in "
-			    "summary -- h:%llu pop:%ld", 
+			log(LOG_DEBUG, "query: found place:'%s' (len:%"INT32") in "
+			    "summary -- h:%"UINT64" pop:%"INT32"", 
 			    phrasePtr, phraseLen, place, placePop);
 
 			if (!m_summaryLocs.safeMemcpy((char *)&place, 
 						      sizeof(uint64_t)))
 				return false;
 			if (!m_summaryLocsPops.safeMemcpy((char *)&placePop, 
-							  sizeof(long)))
+							  sizeof(int32_t)))
 				return false;
  		}
 	}
 	// sanity check - should have same # of locs as loc pops
 	if (m_summaryLocs.length()/sizeof(uint64_t) !=
-	    m_summaryLocsPops.length()/sizeof(long)) {
+	    m_summaryLocsPops.length()/sizeof(int32_t)) {
 		char *xx = NULL; *xx = 0;
 	}
 
@@ -1131,7 +1211,7 @@ bool Summary::scanForLocations ( ) {
 // i upped this from 300 to 3000 to better support the BIG HACK
 #define MAX_TO_MATCH 3000
 
-bool Summary::set0 ( char *doc , long docLen , Query *q, Msg20Request *mr ) {
+bool Summary::set0 ( char *doc , int32_t docLen , Query *q, Msg20Request *mr ) {
 	return set1 ( doc ,
 		      docLen ,
 		      q ,
@@ -1142,48 +1222,48 @@ bool Summary::set0 ( char *doc , long docLen , Query *q, Msg20Request *mr ) {
 		      mr->m_bigSampleMaxLen ,
 		      NULL , // bigSampleLen ptr!
 		      NULL ,
-		      (long long *)mr->ptr_termFreqs );
+		      (int64_t *)mr->ptr_termFreqs );
 }
 
 // . doc must be NULL terminated
 // . returns false and sets g_errno on error
 // . CAUTION: writes into "doc"
 bool Summary::set1 ( char      *doc                ,
-		     long       docLen             ,
+		     int32_t       docLen             ,
 		     Query     *q                  ,
-		     long       maxSummaryLen      ,
-		     long       maxNumLines        ,
-		     long       maxNumCharsPerLine ,
-		     long       bigSampleRadius    ,
-		     long       bigSampleMaxLen    ,
-		     long      *bigSampleLen       ,
+		     int32_t       maxSummaryLen      ,
+		     int32_t       maxNumLines        ,
+		     int32_t       maxNumCharsPerLine ,
+		     int32_t       bigSampleRadius    ,
+		     int32_t       bigSampleMaxLen    ,
+		     int32_t      *bigSampleLen       ,
 		     char      *foundTermVector    ,
-		     long long *termFreqs          ) {
+		     int64_t *termFreqs          ) {
 	// reset summary
 	m_summaryLen = 0;
 	m_summary[0]='\0';
 	// boundary check
 	if ( MAX_SUMMARY_LEN < maxNumCharsPerLine * maxNumLines ) {
 		g_errno = EBUFTOOSMALL;
-		return log("query: Summary too big to hold in buffer of %li "
-			   "bytes.",(long)MAX_SUMMARY_LEN);
+		return log("query: Summary too big to hold in buffer of %"INT32" "
+			   "bytes.",(int32_t)MAX_SUMMARY_LEN);
 	}
 	// query terms
-	long numTerms = q->getNumTerms();
+	int32_t numTerms = q->getNumTerms();
 	// . now assign scores based on term frequencies
 	// . highest score is 10000, then 9900, 9800, 9700, ...
-	long ptrs [ MAX_QUERY_TERMS ];
-	for ( long i = 0 ; i < numTerms ; i++ ) ptrs[i] = i;
+	int32_t ptrs [ ABS_MAX_QUERY_TERMS ];
+	for ( int32_t i = 0 ; i < numTerms ; i++ ) ptrs[i] = i;
 	// convenience var
-	long long *freqs = termFreqs; // q->getTermFreqs();
+	int64_t *freqs = termFreqs; // q->getTermFreqs();
 	// . this is taken from IndexTable.cpp
 	// . bubble sort so lower freqs (rare terms) are on top
 	bool flag = true;
 	while ( flag ) {
 		flag = false;
-		for ( long i = 1 ; i < numTerms ; i++ ) {
+		for ( int32_t i = 1 ; i < numTerms ; i++ ) {
 			if ( freqs[i] >= freqs[i-1] ) continue;
-			long tmp = freqs[i];
+			int32_t tmp = freqs[i];
 			freqs[i  ] = freqs[i-1];
 			freqs[i-1] = tmp;
 			tmp = ptrs[i];
@@ -1193,11 +1273,11 @@ bool Summary::set1 ( char      *doc                ,
 		}
 	}
 	// assign scores, give rarest terms highest score
-	long scores [ MAX_QUERY_TERMS ];
-	for ( long i = 0 ; i < numTerms ; i++ ) 
+	int32_t scores [ ABS_MAX_QUERY_TERMS ];
+	for ( int32_t i = 0 ; i < numTerms ; i++ ) 
 		scores[ptrs[i]] = 10000000 - (i*100);
 	// force QUERY stop words to have much lower scores at most 10000
-	for ( long i = 0 ; i < numTerms ; i++ )
+	for ( int32_t i = 0 ; i < numTerms ; i++ )
 		if ( q->isQueryStopWord(i)  && q->getTermSign(i) == '\0' ) 
 			//scores[i] /= 100000;
 			scores[i] = 0;
@@ -1205,13 +1285,13 @@ bool Summary::set1 ( char      *doc                ,
 	//   word from a compound word like cd-rom  or some_file
 	// . typically they will just be represented by a phrase termId
 	// . we need to include so we can match on those words
-	//for ( long i = 0 ; i < numTerms ; i++ ) 
+	//for ( int32_t i = 0 ; i < numTerms ; i++ ) 
 	//	if ( q->m_ignore[i] ) scores[i] = 0;
 	// don't include if no word representation to match (like phrases)
-	for ( long i = 0 ; i < numTerms ; i++ ) 
+	for ( int32_t i = 0 ; i < numTerms ; i++ ) 
 		if ( q->isPhrase(i) ) scores[i] = 0;
 	// don't highlight '-' terms (or boolean terms in a NOT clause)
-	for ( long i = 0 ; i < numTerms ; i++ ) {
+	for ( int32_t i = 0 ; i < numTerms ; i++ ) {
 		if ( q->getTermSign(i) == '-'  ) scores[i] = -1000000;
 		//if ( q->m_qterms[i].m_underNOT ) scores[i] = -1000000;
 		// don't highlight stuff in fields
@@ -1227,9 +1307,9 @@ bool Summary::set1 ( char      *doc                ,
 	memset ( m  , 0 , 256 );
 	memset ( m2 , 0 , 256 );
 	// populate
-	for ( long i = 0 ; i < numTerms ; i++ ) {
+	for ( int32_t i = 0 ; i < numTerms ; i++ ) {
 		if ( scores[i] <= 0 ) continue;
-		long  tlen = q->getTermLen ( i );
+		int32_t  tlen = q->getTermLen ( i );
 		char *t    = q->getTerm    ( i );
 		// bitch if NULL!!!
 		if ( ! t || tlen <= 0 ) continue;
@@ -1261,15 +1341,15 @@ bool Summary::set1 ( char      *doc                ,
 	// . divide by 2 since we don't match on punctuation words, only alnum
 	// . wordPtrs pts into "doc" to the matching word
 	char *wordPtrs   [MAX_TO_MATCH];
-	long  qterms     [MAX_TO_MATCH];
-	long  numMatches = 0;
+	int32_t  qterms     [MAX_TO_MATCH];
+	int32_t  numMatches = 0;
 
  	// . now find the matches by using strncasecmp()
 	// . we make sure the first 2 chars match before call strncasecmp()
 	// . we set the scores[] array 
 	unsigned char *s = (unsigned char *)doc;
-	long  i = 0;
-	long  j;
+	int32_t  i = 0;
+	int32_t  j;
 	unsigned char  c;
 	// this flag is used to ensure we do phrases correctly.
 	// without it, the query "business development center" (in quotes)
@@ -1309,7 +1389,7 @@ bool Summary::set1 ( char      *doc                ,
 		if ( s[j] == '#' && !is_alnum_utf8(s+j+1) ) j++;
 		// . check all the way here, it's probably a match
 		// . TODO: what about phrases?
-		long k ;
+		int32_t k ;
 		for ( k = 0 ; k < numTerms ; k++ ) {
 			if ( scores[k]        <= 0 ) continue;
 			if ( q->getTermLen(k) != (j-i)<<1 ) continue;
@@ -1318,7 +1398,7 @@ bool Summary::set1 ( char      *doc                ,
 			// . no, they could match different words!!! fixed!
 			unsigned char *s1  = &s[i]          ;
 			unsigned char *s2  = (unsigned char *)q->getTerm(k) ;
-			//long           len = j - i  ;
+			//int32_t           len = j - i  ;
 			unsigned char *s1end = s1 + j - i;
 			char size1 ;
 			char size2 ;
@@ -1327,8 +1407,8 @@ bool Summary::set1 ( char      *doc                ,
 				size1 = getUtf8CharSize(s1);
 				size2 = getUtf8CharSize(s2);
 				if ( size1 != size2 ) break;
-				long low1 = to_lower_utf8_32 ( (char *)s1 );
-				long low2 = to_lower_utf8_32 ( (char *)s2 );
+				int32_t low1 = to_lower_utf8_32 ( (char *)s1 );
+				int32_t low2 = to_lower_utf8_32 ( (char *)s2 );
 				if ( low1 != low2 ) break;
 				s1 += size1;
 				s2 += size2;
@@ -1390,35 +1470,35 @@ bool Summary::set1 ( char      *doc                ,
 	if ( maxNumLines <= 0 || maxSummaryLen <= 0 ) goto getsample; 
 	{
 	// combine neighbors scores to yours
-	long score;
-	long radius = maxNumCharsPerLine / 2 - 5;
+	int32_t score;
+	int32_t radius = maxNumCharsPerLine / 2 - 5;
 	// min of one
 	if ( radius <= 0 ) radius = 1;
 	// if a match is within maxNumCharsPerLine chars of it, add it in
-	long  a , b ;
-	long  ascore ;
-	long  qterm;
-	long  max  = 0;
-	long  maxi = -1;
-	long  maxa = 0;
-	long  maxb = 0;
-	char  gotIt [ MAX_QUERY_TERMS ];
+	int32_t  a , b ;
+	int32_t  ascore ;
+	int32_t  qterm;
+	int32_t  max  = 0;
+	int32_t  maxi = -1;
+	int32_t  maxa = 0;
+	int32_t  maxb = 0;
+	char  gotIt [ ABS_MAX_QUERY_TERMS ];
 	char *maxleft  = NULL;
 	char *maxright = NULL;
-	for ( long i = 0 ; i < numMatches ; i++ ) {
+	for ( int32_t i = 0 ; i < numMatches ; i++ ) {
 		// if word already used, skip it
 		if ( qterms[i] == -1 ) continue;
 		// set totalScore base
 		score = scores[qterms[i]];
 		// use this so we can decrease score of repeated query terms
-		for ( long j = 0 ; j < numTerms ; j++ ) gotIt[j] = 0;
+		for ( int32_t j = 0 ; j < numTerms ; j++ ) gotIt[j] = 0;
 		// add a got it for us
 		gotIt [qterms[i]] = 1;
 		// add in our left neighbors
 		a = i ;
 		while ( --a >= 0 ) {
 			// get distance from center
-			long dist = wordPtrs[i] - wordPtrs[a] ;
+			int32_t dist = wordPtrs[i] - wordPtrs[a] ;
 			// break out if too far away
 			if ( dist > radius ) break;
 			// stop if we hit start of sentence
@@ -1476,14 +1556,14 @@ bool Summary::set1 ( char      *doc                ,
 		// this may be smaller than normal if we had to extend the
 		// left radius to make sure it started at the beginning of
 		// a sentence.
-		long bradius = 2*radius - (wordPtrs[a] - pp);
+		int32_t bradius = 2*radius - (wordPtrs[a] - pp);
 		// do not go over doc end
 		if ( pp + bradius > doc + docLen ) bradius = doc + docLen - pp;
 		// add in our right neighbors
 		b = i ;
 		while ( ++b < numMatches ) {
 			// get distnace from center
-			long dist = wordPtrs[b] - wordPtrs[i] ;
+			int32_t dist = wordPtrs[b] - wordPtrs[i] ;
 			// break out if too far away
 			//if ( dist > radius ) break;
 			if ( dist > bradius ) break;
@@ -1555,7 +1635,7 @@ bool Summary::set1 ( char      *doc                ,
 		// back up over all of utf8 char
 		for ( ; (*right & 0xc0) == 0x80 ; right-- );
 	// get excerpt length
-	long elen = right - left + 1;
+	int32_t elen = right - left + 1;
 	// if 0 or less, no summary
 	if ( elen <= 0 ) return true;
 	// . store in m_summary[]
@@ -1565,7 +1645,7 @@ bool Summary::set1 ( char      *doc                ,
 	// leave room for NULL termination and any html entities we insert
 	char *pend   = m_summary + MAX_SUMMARY_LEN - 6;
 	char *pstart = p;
-	for ( long i = 0 ; i < elen && p < pend ; i++ ) {
+	for ( int32_t i = 0 ; i < elen && p < pend ; i++ ) {
 		if      ( left[i] == '<' ) {*p++='&';*p++='l';*p++='t';*p=';';}
 		else if ( left[i] == '>' ) {*p++='&';*p++='g';*p++='t';*p=';';}
 		else if ( left[i] == '\t' ) { *p=' '; }
@@ -1584,16 +1664,16 @@ bool Summary::set1 ( char      *doc                ,
 	// . now reduce the scores by what's in gotIt, so those terms are less
 	//   likely to be matched again, it gives others a chance
 	// . clear the gotIt array
-	for ( long j = 0 ; j < numTerms ; j++ ) gotIt[j] = 0;
+	for ( int32_t j = 0 ; j < numTerms ; j++ ) gotIt[j] = 0;
 	// reduce scores of query terms included in this summary excerpt
-	for ( long j = maxa ; j < maxb ; j++ ) {
+	for ( int32_t j = maxa ; j < maxb ; j++ ) {
 		qterm = qterms[j];
 		if ( gotIt[qterm] != 0 ) continue;
 		gotIt[qterm] = 1;
 		scores [qterm] /= 8;
 	}
 	// remove winning matches from our 2 arrays so we don't do again
-	for ( long j = maxa ; j < maxb ; j++ ) qterms[j] = -1;
+	for ( int32_t j = maxa ; j < maxb ; j++ ) qterms[j] = -1;
 	// clear out from "doc" so we don't dup any of summary, too
 	memset ( left , ' ' , elen );
 	// . do we have enough excerpts?
@@ -1611,10 +1691,10 @@ bool Summary::set1 ( char      *doc                ,
 	if ( bigSampleRadius <= 0 || bigSampleMaxLen <= 0 ) return true;
 	// get text within a radius of bigSampleRadius words of every
 	// query term for generating related topics and what not
-	for ( long i = 0 ; i < numMatches ; i++ ) {
+	for ( int32_t i = 0 ; i < numMatches ; i++ ) {
 		// if it is a stop word or ignored, skip it, unless forced
 		// with a plus sign
-		long qt = qterms[i];
+		int32_t qt = qterms[i];
 		if ( q->isQueryStopWord(qt) && q->getTermSign(qt) == '\0' ) 
 			continue;
 		// point to left extreme
@@ -1657,9 +1737,9 @@ bool Summary::set1 ( char      *doc                ,
 		}
 		// if disjoint with previous sample, write previous sample
 		else if ( left > oldright ) {
-			long size = oldright - oldleft;
+			int32_t size = oldright - oldleft;
 			if ( p + size + 1 < docEnd ) {
-				memcpy ( p , oldleft , size );
+				gbmemcpy ( p , oldleft , size );
 				p += size ;
 				*p++ = '\0';
 			}
@@ -1674,9 +1754,9 @@ bool Summary::set1 ( char      *doc                ,
 	}	
 	// write out the last one here
 	if ( oldright != (char *)0x7fffffff ) {
-		long size = oldright - oldleft;
+		int32_t size = oldright - oldleft;
 		if ( p + size + 1 < docEnd ) {
-			memcpy ( p , oldleft , size );
+			gbmemcpy ( p , oldleft , size );
 			p += size ;
 			*p++ = '\0';
 		}

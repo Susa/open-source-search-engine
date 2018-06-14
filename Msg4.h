@@ -17,6 +17,8 @@ bool addMetaList ( char *p , class UdpSlot *slot = NULL ) ;
 
 bool isInMsg4LinkedList ( class Msg4 *msg4 ) ;
 
+#include "SafeBuf.h"
+
 class Msg4 {
 
  public:
@@ -26,7 +28,7 @@ class Msg4 {
 		       char    *coll                   ,
 		       void    *state                  ,
 		       void  (* callback)(void *state) ,
-		       long     niceness               ,
+		       int32_t     niceness               ,
 		       bool     forceLocal = false     ,
 		       bool     splitList  = true      );
 
@@ -35,7 +37,7 @@ class Msg4 {
 		       collnum_t  collnum                ,
 		       void      *state                  ,
 		       void    (* callback)(void *state) ,
-		       long       niceness               ,
+		       int32_t       niceness               ,
 		       bool       forceLocal = false     ,
 		       bool       splitList  = true      );
 
@@ -46,47 +48,62 @@ class Msg4 {
 	// (rdbId | 0x08) then rdb record [if nosplit]
 	// (rdbId | 0x00) then rdb record [if split  ]
 	bool addMetaList ( char *metaList                 ,
-			   long  metaListSize             ,
+			   int32_t  metaListSize             ,
 			   char *coll                     ,
 			   void *state                    ,
 			   void (* callback)(void *state) ,
-			   long  niceness                 ,
+			   int32_t  niceness                 ,
 			   char  rdbId = -1               );
 
-	// this one is faster...
-	bool addMetaList ( char      *metaList                 ,
-			   long       metaListSize             ,
+
+	bool addMetaList ( class SafeBuf *sb ,
 			   collnum_t  collnum                  ,
 			   void      *state                    ,
 			   void      (* callback)(void *state) ,
-			   long       niceness                 ,
-			   char       rdbId = -1               );
+			   int32_t       niceness                 ,
+			   char       rdbId = -1               ,
+			   int32_t       shardOverride = -1       );
+
+	// this one is faster...
+	// returns false if blocked
+	bool addMetaList ( char      *metaList                 ,
+			   int32_t       metaListSize             ,
+			   collnum_t  collnum                  ,
+			   void      *state                    ,
+			   void      (* callback)(void *state) ,
+			   int32_t       niceness                 ,
+			   char       rdbId = -1               ,
+			   int32_t       shardOverride = -1       );
 
 	bool addMetaList2 ( );
 
 	Msg4() { m_inUse = false; };
-	~Msg4() { if ( m_inUse ) { char *xx=NULL;*xx=0; } };
+	// why wasn't this saved in addsinprogress.dat file?
+	~Msg4() { if ( m_inUse ) log("BAD: MSG4 in use!!!!!!"); };
 
 	// injecting into the "test" collection likes to flush the buffers
 	// after each injection to make sure the data is available for
 	// following injections
 	bool flush ( void *state                    ,
 		     void (* callback)(void *state) ,
-		     long  niceness                 );
+		     int32_t  niceness                 );
 
 	// private:
 
 	void         (*m_callback ) ( void *state );
 	void          *m_state;
 
+	SafeBuf m_tmpBuf;
+
 	char      m_rdbId;
 	char      m_inUse;
 	collnum_t m_collnum;
-	long      m_niceness;
-	//bool      m_splitList;
+	int32_t      m_niceness;
+
+	int32_t m_shardOverride;
 
 	char *m_metaList     ;
-	long  m_metaListSize ;
+	int32_t  m_metaListSize ;
 	char *m_currentPtr   ; // into m_metaList
 
 	// the linked list for waiting in line

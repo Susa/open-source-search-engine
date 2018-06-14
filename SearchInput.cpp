@@ -2,7 +2,7 @@
 
 #include "SearchInput.h"
 #include "Parms.h"         // g_parms
-#include "CollectionRec.h" // cr
+//#include "CollectionRec.h" // cr
 #include "Pages.h"         // g_msg
 #include "LanguageIdentifier.h"
 #include "CountryCode.h"
@@ -12,6 +12,8 @@
 #include "Timedb.h"
 #include "PageResults.h"
 
+//char getFormatFromRequest ( class HttpRequest *hr ) ;
+
 SearchInput::SearchInput() {
 	reset();
 }
@@ -19,31 +21,15 @@ SearchInput::~SearchInput() {
 	reset();
 }
 void SearchInput::reset ( ) {
-	/*
-	m_langHint = 0;
-	m_languageWeightFactor = 0.33;
-	m_enableLanguageSorting = 0;
-	m_queryIP = 0;
-	m_hr = NULL;
-	m_gbcountry = NULL;
-	m_gbcountryLen = 0;
-	m_country = 0;
-	m_language = 0;
-	m_sq = NULL;
-	m_sqLen = 0;
-	m_noDocIds     = NULL;
-	m_noSiteIds    = NULL;
-	m_noDocIdsLen  = 0;
-	m_noSiteIdsLen = 0;
-	*/
 }
 
-void SearchInput::setToDefaults ( CollectionRec *cr , long niceness ) {
+//void SearchInput::setToDefaults ( CollectionRec *cr , int32_t niceness ) {
+void SearchInput::clear ( int32_t niceness ) {
 	// reset it first
 	reset();
 	// set all to 0 just to avoid any inconsistencies
-	long size = (char *)&m_END_TEST - (char *)&m_START;
-	memset ( this , 0x00 , size );
+	int32_t size = (char *)&m_END_TEST - (char *)&m_START;
+	memset ( &m_START , 0x00 , size );
 	m_sbuf1.reset();
 	m_sbuf2.reset();
 	m_sbuf3.reset();
@@ -55,7 +41,7 @@ void SearchInput::setToDefaults ( CollectionRec *cr , long niceness ) {
 	m_maxQueryTerms      = 1000;
 	m_niceness           = niceness;
 
-	m_defaultSortLanguageLen = 0;
+	//m_defaultSortLanguageLen = 0;
 }
 
 
@@ -63,35 +49,37 @@ void SearchInput::setToDefaults ( CollectionRec *cr , long niceness ) {
 // . do not use all vars, like the m_*ToDisplay should not be included
 key_t SearchInput::makeKey ( ) {
 	// hash the query
-	long       n       = m_q->getNumTerms  ();
-	long long *termIds = m_q->getTermIds   ();
-	char      *signs   = m_q->getTermSigns ();
+	int32_t       n       = m_q.getNumTerms  ();
+	//int64_t *termIds = m_q.getTermIds   ();
+	//char      *signs   = m_q.getTermSigns ();
 	key_t k;
 	k.n1 = 0;
-	k.n0 = hash64 ( (char *)termIds , n * sizeof(long long) );
-	k.n0 = hash64 ( (char *)signs   , n , k.n0 );
+	//k.n0 = hash64 ( (char *)termIds , n * sizeof(int64_t) );
+	//k.n0 = hash64 ( (char *)signs   , n , k.n0 );
 	// user defined weights, for weighting each query term separately
-	for ( long i = 0 ; i < n ; i++ ) {
-		k.n0 = hash64 ((char *)&m_q->m_qterms[i].m_userWeight,4, k.n0);
-		k.n0 = hash64 ((char *)&m_q->m_qterms[i].m_userType  ,1, k.n0);
+	for ( int32_t i = 0 ; i < n ; i++ ) {
+		k.n0 = hash64 ((char *)&m_q.m_qterms[i].m_termId    ,4, k.n0);
+		k.n0 = hash64 ((char *)&m_q.m_qterms[i].m_termSign  ,1, k.n0);
+		k.n0 = hash64 ((char *)&m_q.m_qterms[i].m_userWeight,4, k.n0);
+		k.n0 = hash64 ((char *)&m_q.m_qterms[i].m_userType  ,1, k.n0);
 	}
 	// space separated, NULL terminated, list of meta tag names to display
 	if ( m_displayMetas          ) 
 		k.n0 = hash64b ( m_displayMetas          , k.n0 );
 	// name of collection in external cluster to get titleRecs for 
 	// related pages from
-	if ( m_rp_getExternalPages && m_rp_externalColl )
-		k.n0 = hash64b ( m_rp_externalColl , k.n0 );
+	//if ( m_rp_getExternalPages && m_rp_externalColl )
+	//	k.n0 = hash64b ( m_rp_externalColl , k.n0 );
 	// collection e import from
-	if ( m_importColl )
-		k.n0 = hash64b ( m_importColl , k.n0 );
+	//if ( m_importColl )
+	//	k.n0 = hash64b ( m_importColl , k.n0 );
 	// the special query parm
-	if ( m_sq && m_sqLen > 0 )
-		k.n0 = hash64 ( m_sq , m_sqLen , k.n0 );
-	if ( m_noDocIds && m_noDocIdsLen )
-		k.n0 = hash64 ( m_noDocIds , m_noDocIdsLen , k.n0 );
-	if ( m_noSiteIds && m_noSiteIdsLen )
-		k.n0 = hash64 ( m_noSiteIds , m_noSiteIdsLen , k.n0 );
+	//if ( m_sq && m_sqLen > 0 )
+	//	k.n0 = hash64 ( m_sq , m_sqLen , k.n0 );
+	//if ( m_noDocIds && m_noDocIdsLen )
+	//	k.n0 = hash64 ( m_noDocIds , m_noDocIdsLen , k.n0 );
+	//if ( m_noSiteIds && m_noSiteIdsLen )
+	//	k.n0 = hash64 ( m_noSiteIds , m_noSiteIdsLen , k.n0 );
 
 	// no need to hash these again separately, they are in between 
 	// m_START and m_END_HASH
@@ -104,11 +92,11 @@ key_t SearchInput::makeKey ( ) {
 	// . nnot incuding m_docsToScanForTopics since since we got TopicGroups
 	char *a = ((char *)&m_START) + 4 ; // msg40->m_dpf;
 	char *b =  (char *)&m_END_HASH   ; // msg40->m_topicGroups;
-	long size = b - a; 
+	int32_t size = b - a; 
 	// push and flush some parms that should not contribute
-	//long save1 = m_refs_numToDisplay;
-	//long save2 = m_rp_numToDisplay;
-	//long save3 = m_numTopicsToDisplay;
+	//int32_t save1 = m_refs_numToDisplay;
+	//int32_t save2 = m_rp_numToDisplay;
+	//int32_t save3 = m_numTopicsToDisplay;
 	//m_refs_numToDisplay  = 0;
 	//m_rp_numToDisplay    = 0;
 	//m_numTopicsToDisplay = 0;
@@ -119,7 +107,7 @@ key_t SearchInput::makeKey ( ) {
 	//m_rp_numToDisplay    = save2;
 	//m_numTopicsToDisplay = save3;
 	// hash each topic group
-	for ( long i = 0 ; i < m_numTopicGroups ; i++ ) {
+	for ( int32_t i = 0 ; i < m_numTopicGroups ; i++ ) {
 		TopicGroup *t = &m_topicGroups[i];
 		//k.n0 = hash64 ( t->m_numTopics           , k.n0 );
 		k.n0 = hash64 ( t->m_maxTopics           , k.n0 );
@@ -134,22 +122,22 @@ key_t SearchInput::makeKey ( ) {
 	// . boolean queries have operators (AND OR NOT ( ) ) that we need
 	//   to consider in this hash as well. so
 	// . so just hash the whole damn query
-	if ( m_q->m_isBoolean ) {
-		char *q    = m_q->getQuery();
-		long  qlen = m_q->getQueryLen();
+	if ( m_q.m_isBoolean ) {
+		char *q    = m_q.getQuery();
+		int32_t  qlen = m_q.getQueryLen();
 		k.n0 = hash64 ( q , qlen , k.n0 );
 	}
 
 	// Language stuff
-	k.n0 = hash64(m_defaultSortLanguage, m_defaultSortLanguageLen, k.n0);
-	k.n0 = hash64(m_defaultSortCountry , m_defaultSortCountryLen , k.n0);
+	//k.n0 = hash64(m_defaultSortLanguage, m_defaultSortLanguageLen, k.n0);
+	//k.n0 = hash64(m_defaultSortCountry , m_defaultSortCountryLen , k.n0);
 
 	// debug
-	//logf(LOG_DEBUG,"query: q=%s k.n0=%llu",m_q->getQuery(),k.n0);
+	//logf(LOG_DEBUG,"query: q=%s k.n0=%"UINT64"",m_q.getQuery(),k.n0);
 
 	//Msg1aParms* m1p = msg40->getReferenceParms();
 	//if( m1p ) {
-	//	k.n0=hash64(((char*)m1p)+sizeof(long), 
+	//	k.n0=hash64(((char*)m1p)+sizeof(int32_t), 
 	//		    sizeof(Msg1aParms)-8,k.n0);
 	//}
 	return k;
@@ -159,457 +147,428 @@ void SearchInput::test ( ) {
 	// set all to 0 just to avoid any inconsistencies
 	char *a = ((char *)&m_START) + 4 ; // msg40->m_dpf;
 	char *b =  (char *)&m_END_TEST;
-	long size = b - a;
+	int32_t size = b - a;
 	memset ( a , 0x00 , size );
 	// loop through all possible cgi parms to set SearchInput
-	for ( long i = 0 ; i < g_parms.m_numSearchParms ; i++ ) {
+	for ( int32_t i = 0 ; i < g_parms.m_numSearchParms ; i++ ) {
 		Parm *m = g_parms.m_searchParms[i];
-		char *x = (char *)this + m->m_soff;
-		if ( m->m_type != TYPE_BOOL ) *(long *)x = 0xffffffff;
+		char *x = (char *)this + m->m_off;
+		if ( m->m_type != TYPE_BOOL ) *(int32_t *)x = 0xffffffff;
 		else                          *(char *)x = 0xff;
 	}
 	// ensure we're all zeros now!
-	long fix = a - (char *)this;
+	int32_t fix = a - (char *)this;
 	unsigned char *p = (unsigned char *)a;
-	for ( long i = 0 ; i < size ; i++ ) {
+	for ( int32_t i = 0 ; i < size ; i++ ) {
 		if ( p[i] == 0xff ) continue;
 		// find it
-		long off = i + fix;
+		int32_t off = i + fix;
 		char *name = NULL; // "unknown";
-		for ( long k = 0 ; k < g_parms.m_numSearchParms ; k++ ) {
+		for ( int32_t k = 0 ; k < g_parms.m_numSearchParms ; k++ ) {
 			Parm *m = g_parms.m_searchParms[k];
-			if ( m->m_soff != off ) continue;
+			if ( m->m_off != off ) continue;
 			name = m->m_title;
 			break;
 		}
 		if ( ! name ) continue;
 		log("query: Got uncovered SearchInput parm at offset "
-		    "%li in SearchInput. name=%s.",off,name);
+		    "%"INT32" in SearchInput. name=%s.",off,name);
 	}
 }
 
 void SearchInput::copy ( class SearchInput *si ) {
-	memcpy ( (char *)this , (char *)si , sizeof(SearchInput) );
+	gbmemcpy ( (char *)this , (char *)si , sizeof(SearchInput) );
 }
 
 class SearchInput *g_si = NULL;
 
-bool SearchInput::set ( TcpSocket *sock , HttpRequest *r , Query *q ) {
+bool SearchInput::set ( TcpSocket *sock , HttpRequest *r ) { //, Query *q ) {
 
-	// get coll rec
-	long  collLen;
-	char *coll = r->getString ( "c" , &collLen );
-	//if (! coll){coll = g_conf.m_defaultColl; collLen = gbstrlen(coll); }
-	if ( ! coll )
-		coll = g_conf.getDefaultColl(r->getHost(), r->getHostLen());
-	if ( ! coll ) { g_errno = ENOCOLLREC; return false; }
-	collLen = gbstrlen(coll);
-	CollectionRec *cr = g_collectiondb.getRec ( coll );
-	if ( ! cr ) { 
-		g_errno = ENOCOLLREC;
-		g_msg = " (error: no such collection)";		
-		return false;
+	// store list of collection #'s to search here. usually just one.
+	m_collnumBuf.reset();
+
+	m_q.reset();
+
+	// zero out everything, set niceness to 0
+	clear ( 0 ) ;
+
+	// save it now
+	m_sock = sock;
+
+	// still his buffer. m_hr will free the stuff, but "r" can
+	// still access it for the time being, and not free it
+	m_hr.stealBuf ( r );
+
+	char *coll = g_collectiondb.getDefaultColl ( r );
+
+	//////
+	//
+	// build "m_collnumBuf" to consist of all the collnums we should
+	// be searching.
+	//
+	///////
+
+	m_firstCollnum = -1;
+	// set this to the collrec of the first valid collnum we encounter
+	CollectionRec *cr = NULL;
+	// now convert list of space-separated coll names into list of collnums
+	char *p = r->getString("c",NULL);
+	// if no collection list was specified look for "token=" and
+	// use those to make collections. hack for diffbot.
+	char *token = r->getString("token",NULL);
+	// find all collections under this token
+	for ( int32_t i = 0 ; i < g_collectiondb.m_numRecs ; i++ ) {
+		// must not have a "&c="
+		if ( p ) break;
+		// must have a "&token="
+		if ( ! token ) break;
+		// skip if empty
+		CollectionRec *tmpcr = g_collectiondb.m_recs[i];
+		if ( ! tmpcr ) continue;
+		// skip if does not match token
+		if ( strcmp(token,tmpcr->m_diffbotToken.getBufStart()) ) 
+			continue;
+		// . we got a match
+		// . set initial junk
+		if ( ! cr ) {
+			cr = tmpcr;
+			m_firstCollnum = tmpcr->m_collnum;
+		}
+		// save the collection #
+		if ( ! m_collnumBuf.safeMemcpy ( &tmpcr->m_collnum, 
+						 sizeof(collnum_t) ) )
+			return false;
 	}
 
-	// set all to 0 just to avoid any inconsistencies
-	//long size = (char *)&m_END_TEST - (char *)&m_START;
-	//memset ( this , 0x00 , size );
-	setToDefaults( cr , 0 ); // niceness
+	// if we had a "&c=..." in the GET request process that
+	if ( p ) {
+	loop:
+		char *end = p;
+		for ( ; *end && ! is_wspace_a(*end) ; end++ );
+		// temp null
+		char c = *end;
+		*end = '\0';
+		CollectionRec *tmpcr = g_collectiondb.getRec ( p );
+		// set defaults from the FIRST one
+		if ( tmpcr && ! cr ) {
+			cr = tmpcr;
+			m_firstCollnum = tmpcr->m_collnum;
+		}
+		if ( ! tmpcr ) { 
+			g_errno = ENOCOLLREC;
+			log("query: missing collection %s",p);
+			g_msg = " (error: no such collection)";		
+			return false;
+		}
+		// add to our list
+		if (!m_collnumBuf.safeMemcpy(&tmpcr->m_collnum,
+					     sizeof(collnum_t)))
+			return false;
+		// restore the \0 character we wrote in there
+		*end = c;
+		// advance
+		p = end;
+		// skip to next collection name if there is one
+		while ( *p && is_wspace_a(*p) ) p++; 
+		// now add it's collection # to m_collnumBuf if there
+		if ( *p ) goto loop;
+	}
 
+	// use default collection if none provided
+	if ( ! p && ! token && m_collnumBuf.length() <= 0 ) {
+		// get default collection rec
+		cr = g_collectiondb.getRec (coll);
+		// add to our list
+		if ( cr &&
+		     !m_collnumBuf.safeMemcpy(&cr->m_collnum,
+					      sizeof(collnum_t)))
+			return false;
+	}
+		
+
+
+	/////
+	//
+	// END BUILDING m_collnumBuf
+	//
+	/////
+
+
+	// save the collrec
 	m_cr = cr;
 
-	m_coll2    = m_cr->m_coll;
-	m_collLen2 = gbstrlen(m_coll2);
-
-	// from ::reset()
-	m_languageWeightFactor = 0.33;
-
-	// Set IP for language detection.
-	// (among other things)
-	if ( sock ) m_queryIP = sock->m_ip;
-	else        m_queryIP = 0;
-	m_hr = r;
-
-	// keep ptr to the query class to use
-	m_q        = q;
-
-	// set this here since its size can be variable
-	m_sq = r->getString("sq",&m_sqLen);
-	// negative docids
-	m_noDocIds = r->getString("nodocids",&m_noDocIdsLen);
-	// negative sites
-	m_noSiteIds = r->getString("nositeids",&m_noSiteIdsLen);
-
-	// Msg5e calls Msg40 with this set to true in the searchInput
-	// so it can analyze the entire pages of each search result so it
-	// can find the article start/end tag sequence indicators
-	m_getTitleRec = r->getLong("gettrs",0);
-
-	m_getSitePops = r->getLong("getsitepops",0 );
-
-        // does this collection ban this IP?
-	/*
-	long  encapIp = 0; 
-m	if (! cr->hasSearchPermission ( sock, encapIp ) ) {
-		g_errno = ENOPERM;
-		g_msg = " (error: permission denied)";
+	// must have had one
+	if ( ! cr ) {
+		log("si: si. collection does not exist");
+		// if we comment the below out then it cores in setToDefault!
+		g_errno = ENOCOLLREC;
 		return false;
 	}
-	*/
 
-	// set all search parms in SearchInput to defaults
-	for ( long i = 0 ; i < g_parms.m_numSearchParms ; i++ ) {
-		Parm *m = g_parms.m_searchParms[i];
-		// sanity
-		if ( m->m_soff < 0 ) { char *xx=NULL;*xx=0; }
-		char *x = (char *)this + m->m_soff;
-		// what is the def val ptr
-		char *def = NULL;
-		if      ( m->m_off >= 0 && m->m_obj == OBJ_COLL )
-			def = ((char *)cr) + m->m_off;
-		else if ( m->m_off >= 0 && m->m_obj == OBJ_CONF )
-			def = ((char *)&g_conf) + m->m_off;
-		// set it based on type
-		if      ( m->m_type == TYPE_LONG ) {
-			long v = 0;
-			if ( def )
-				v = *(long *)def;
-			else if ( m->m_def ) 
-				v = atol(m->m_def);
-			*(long *)x = v;
-		}
-		else if ( m->m_type == TYPE_BOOL ) {
-			long v = 0;
-			if ( def ) 
-				v = *(char *)def;
-			else if ( m->m_def ) 
-				v = atol(m->m_def);
-			// sanity test!
-			if ( v != 0 && v != 1 )
-				log("query: got non-bool default "
-				    "for bool parm %s",m->m_title);
-			if ( v ) *(char *)x = 1;
-			else     *(char *)x = 0;
-		}
-		else if ( m->m_type == TYPE_CHAR ) {
-			if ( def )
-				*(char *)x = *(char *)def;
-			else if ( m->m_def ) 
-				*(char *)x = atol(m->m_def);
-		}
-		else if ( m->m_type == TYPE_FLOAT ) {
-			float v = 0;
-			if ( def )
-				v = *(float *)def;
-			else if ( m->m_def ) 
-				v = atof(m->m_def);
-			*(float *)x = (float)v;
-		}
-		else if ( m->m_type == TYPE_STRING ||
-			  m->m_type == TYPE_STRINGBOX ) {
-			//if ( m->m_cgi && strcmp ( m->m_cgi, "erpc" ) == 0 )
-			//	log("hey1");
-			//if ( m->m_cgi && strcmp ( m->m_scgi, "q" ) == 0 )
-			//	log("hey1");
-			char *v = NULL;
-			if ( def )
-				v = (char *)def;
-			else if ( m->m_def ) 
-				v = m->m_def;
-			*(char **)x = v;
-			// set the length
-			if ( ! v ) *(long *)(x-4) = 0;
-			else       *(long *)(x-4) = gbstrlen(v);
-		}
-	}
+	// and set from the http request. will set m_coll, etc.
+	g_parms.setToDefault ( (char *)this , OBJ_SI , cr );
 
-	// this is just used to determine in PageResults.cpp if we should
-	// show admin knobs next to each result...
-	// default to off for now
-	m_isAdmin = r->getLong("admin",0);
-	//if ( m_isAdmin ) m_isAdmin = g_users.hasPermission ( r , PAGE_MASTER );
-	// local ip?
-	if ( ! r->isLocal() ) m_isAdmin = 0;
 
-	// default set does not take into account g_conf,
-	// so we will take care of that here ourselves...
-	m_adFeedEnabled  = g_conf.m_adFeedEnabled;
-	//m_excludeLinkText = g_conf.m_excludeLinkText;
-	//m_excludeMetaText = g_conf.m_excludeMetaText;
+	///////
+	//
+	// set defaults of some things based on format language
+	//
+	//////
 
-	// we need to get some cgi values in order to correct the defaults
-	// based on if we're doing an xml feed, have a site: query, etc.
-	long  xml      = r->getLong ( "xml" , 0 ); // was "raw"
-	long  siteLen  = 0; r->getString ("site",&siteLen);
-	long  sitesLen = 0; r->getString ("sites",&sitesLen);
-	
+	// get the format. "xml" "html" "json" --> FORMAT_HTML, FORMAT_CSV ...
+	char tmpFormat = m_hr.getReplyFormat();//getFormatFromRequest ( &m_hr);
 	// now override automatic defaults for special cases
-	if ( xml > 0 ) {
+	if ( tmpFormat != FORMAT_HTML ) {
 		m_familyFilter            = 0;
-		// this is causing me a headache when on when i dont know it
-		m_restrictIndexdbForQuery   = false;
-		// this is hackish
-		if ( r->getLong("rt",0) ) m_restrictIndexdbForQuery=false;
 		m_numTopicsToDisplay      = 0;
 		m_doQueryHighlighting     = 0;
-		m_spellCheck              = 0;
-		m_refs_numToGenerate      = 0;
-		m_refs_docsToScan         = 0;
+		//m_spellCheck              = 0;
+		m_getDocIdScoringInfo = false;
+		// turn gigabits off by default if not html
+		//m_docsToScanForTopics = 0;
 	}
-	else if ( m_siteLen > 0 ) {
-		m_restrictIndexdbForQuery = false;
+
+	// if they have a list of sites...
+	if ( m_sites && m_sites[0] ) {
 		m_doSiteClustering        = false;
 		m_ipRestrictForTopics     = false;
 	}
-	else if ( m_sitesLen > 0 ) {
-		m_ipRestrictForTopics     = false;
+
+
+	
+
+
+	// and set from the http request. will set m_coll, etc.
+	g_parms.setFromRequest ( &m_hr , sock , cr , (char *)this , OBJ_SI );
+
+
+	if ( m_streamResults &&
+	     tmpFormat != FORMAT_XML &&
+	     tmpFormat != FORMAT_CSV &&
+	     tmpFormat != FORMAT_JSON ) {
+		log("si: streamResults only supported for "
+		    "xml/csv/json. disabling");
+		m_streamResults = false;
 	}
 
-	m_doIpClustering          = false;
-	m_sitesQueryLen           = 0;
+	m_coll = coll;
 
-	// set the user ip, "uip"
-	long uip = m_queryIP;
-	char *uipStr = m_hr->getString ("uip" , NULL );
-	long tmpIp = 0; if ( uipStr ) tmpIp = atoip(uipStr);
-	if ( tmpIp ) uip = tmpIp;
+	// it sets m_formatStr above, but we gotta set this...
+	m_format = tmpFormat;
 
+
+	//////
 	//
+	// fix some parms
 	//
-	// BEGIN MAIN PARM SETTING LOOP
+	//////
+
+	// set m_isMasterAdmin to zero if no correct ip or password
+	if ( ! g_conf.isMasterAdmin ( sock , &m_hr ) ) m_isMasterAdmin = 0;
+
+	// collection admin?
+	m_isCollAdmin = g_conf.isCollAdmin ( sock , &m_hr );
+
+	//////////////////////////////////////
 	//
+	// transform input into classes
 	//
+	//////////////////////////////////////
 
-	// loop through all possible cgi parms to set SearchInput
-	for ( long i = 0 ; i < g_parms.m_numSearchParms ; i++ ) {
-		Parm *m = g_parms.m_searchParms[i];
-		char *x = (char *)this + m->m_soff;
-		// what is the parm's cgi name?
-		char *cgi = m->m_scgi;
-		if ( ! cgi ) cgi = m->m_cgi;
-		// sanity check
-		if ( ! m->m_sparm ) {
-			log("query: Failed search input sanity check.");
-			char *xx = NULL; *xx = 0;
-		}
-		// . break it down by type now
-		// . get it from request and store it in SearchInput
-		if ( m->m_type == TYPE_LONG ) {
-			// default was set above
-			long def = *(long *)x;
-			// assume default
-			long v = def;
-			// but cgi parms override cookie
-			v = r->getLong ( cgi , v );
-			// but if its a privledged parm and we're not an admin
-			// then do not allow overrides, but m_priv of 3 means
-			// to not display for clients, but to allow overrides
-			if ( ! m_isAdmin && m->m_priv && m->m_priv!=3) v = def;
-			// bounds checks
-			if ( v < m->m_smin ) v = m->m_smin;
-			if ( v > m->m_smax ) v = m->m_smax;
-			if ( m->m_sminc >= 0 ) {
-				long vmin = *(long *)((char *)cr+m->m_sminc);
-				if ( v < vmin ) v = vmin;
-			}
-			if ( m->m_smaxc >= 0 ) {
-				long vmax = *(long *)((char *)cr+m->m_smaxc);
-				if ( v > vmax ) v = vmax;
-			}
-			// set it
-			*(long *)x = v;
-			// do not print start result num (m->m_sprop is 0 for 
-			// "s" now)
-			//if ( cgi[0] == 's' && cgi[1] == '\0' ) continue;
-			// should we propagate it? true by default
-			//if ( ! m->m_sprop ) continue;
-			// if it is the same as its default, and the default is
-			// always from m_def and never from the CollectionRec, 
-			// then do not both storing it in here! what's the 
-			// point?
-			if ( v == def && m->m_off < 0 ) continue;
-			// if not default do not propagate
-			if ( v == def ) continue;
-			// . include for sure if explicitly provided
-			// . vp will be NULL if "cgi" is not explicitly listed 
-			//   as a cgi parm. otherwise, even if *vp == '\0', vp
-			//   is non-NULL.
-			// . crap, it can be in the cookie now
-			//char *vp = r->getValue(cgi, NULL, NULL);
-			// if not given at all, do not propagate
-			//if ( ! vp ) continue;
-			// store in up if different from default, even if
-			// same as default ("def") because default may be
-			// changed by the admin since m->m_off >= 0
-			//if ( m->m_sprpg && up + gbstrlen(cgi) + 20 < upend ) 
-			//	up += sprintf ( up , "%s=%li&", cgi , v );
-			//if ( m->m_sprpp && pp + gbstrlen(cgi) + 80 < ppend )
-			//	pp += sprintf ( pp , "<input type=hidden "
-			//			"name=%s value=\"%li\">\n", 
-			//			cgi , v );
-		}
-		else if ( m->m_type == TYPE_FLOAT ) {
-			// default was set above
-			float def = *(float *)x;
-			// get overriding from http request, if any
-			float v;
-			// but if its a privledged parm and we're not an admin
-			// then do not allow overrides
-			if ( ! m_isAdmin && m->m_priv && m->m_priv!=3) v = def;
-			else v = r->getFloat( cgi , def );
-			// bounds checks
-			if ( v < m->m_smin ) v = m->m_smin;
-			if ( v > m->m_smax ) v = m->m_smax;
-			if ( m->m_sminc >= 0 ) {
-				float vmin = *(float *)((char *)cr+m->m_sminc);
-				if ( v < vmin ) v = vmin;
-			}
-			if ( m->m_smaxc >= 0 ) {
-				float vmax = *(float *)((char *)cr+m->m_smaxc);
-				if ( v > vmax ) v = vmax;
-			}
-			// set it
-			*(float *)x = v;
-			// do not print start result num
-			//if ( cgi[0] == 's' && cgi[1] == '\0' ) continue;
+	// allow for "qlang" if still don't have it
+	//int32_t gglen2;
+	//char *gg2 = r->getString ( "qlang" , &gglen2 , NULL );
+	//if ( m_gblang == 0 && gg2 && gglen2 > 1 )
+	//	m_gblang = getLanguageFromAbbr(gg2);
+	
+	// fix query by removing lang:xx from ask.com queries
+	//char *end = m_query + m_queryLen -8;
+	//if ( m_queryLen > 8 && m_query && end > m_query && 
+	//     strncmp(end," lang:",6)==0 ) {
+	//	char *asklang = m_query+m_queryLen - 2;
+	//	m_gblang = getLanguageFromAbbr(asklang);
+	//	m_queryLen -= 8;
+	//	m_query[m_queryLen] = 0;
+	//	
+	//}
 
-			// include for sure if explicitly provided
-			char *vp = r->getValue(cgi, NULL, NULL);
-			if ( ! vp ) continue;
-			// unchanged from default?
-			if ( v == def ) continue;
-			// store in up different from default
-			//if ((vp||v!= def) && up + gbstrlen(cgi)+20 < upend ) 
-			//	up += sprintf ( up , "%s=%f&", cgi , v );
-			//if ((vp||v!= def) && pp + gbstrlen(cgi)+20 < ppend )
-			//	pp += sprintf ( pp , "<input type=hidden "
-			//			"name=%s value=\"%f\">\n", 
-			//			cgi , v );
-		}
+	// . returns false and sets g_errno on error
+	// . sets m_qbuf1 and m_qbuf2
+	// . sets:
+	//   m_sbuf1
+	//   m_sbuf2
+	//   m_sbuf3
+	//   m_displayQuery
+	//   m_qe (encoded query)
+	//   m_rtl (right to left like hebrew)
+	//   m_highlightQuery
+	if ( ! setQueryBuffers (r) )
+		return log("query: setQueryBuffers: %s",mstrerror(g_errno));
 
-		else if ( m->m_type == TYPE_BOOL ) {
-			// default was set above
-			long def = *(char *)x;
-			if ( def != 0 ) def = 1; // normalize
-			// assume default
-			long v = def;
-			// cgi parms override cookie
-			v = r->getBool ( cgi , v );
-			// but if no perm, use default
-			if ( ! m_isAdmin && m->m_priv && m->m_priv!=3) v = def;
-			if ( v != 0 ) v = 1; // normalize
-			*(char *)x = v;
-			// don't propagate rcache
-			//if ( ! strcmp(cgi,"rcache") ) continue;
-			// should we propagate it? true by default
-			//if ( ! m->m_sprop ) continue;
-			// if it is the same as its default, and the default is
-			// always from m_def and never from the CollectionRec, 
-			// then do not both storing it in here! what's the 
-			// point?
-			if ( v == def && m->m_off < 0 ) continue;
-			// if not default do not propagate
-			if ( v == def ) continue;
-			// . include for sure if explicitly provided
-			// . vp will be NULL if "cgi" is not explicitly listed 
-			//   as a cgi parm. otherwise, even if *vp == '\0', vp 
-			//   is non-NULL.
-			// . crap, it can be in the cookie now!
-			//char *vp = r->getValue(cgi, NULL, NULL);
-			// if not given at all, do not propagate
-			//if ( ! vp ) continue;
-			// store in up if different from default, even if
-			// same as default ("def") because default may be
-			// changed by the admin since m->m_off >= 0
-			//if ( m->m_sprpg && up + gbstrlen(cgi) + 10 < upend )
-			//	up += sprintf ( up , "%s=%li&", cgi , v );
-			//if ( m->m_sprpp && pp + gbstrlen(cgi) + 80 < ppend )
-			//	pp += sprintf ( pp , "<input type=hidden "
-			//			"name=%s value=\"%li\">\n", 
-			//			cgi , v );
-		}
-		else if ( m->m_type == TYPE_CHAR ) {
-			// default was set above
-			char def = *(char *)x;
-			*(char *)x = r->getLong ( cgi, def );
-			// use this
-			long v = *(char *)x;
-			// store in up if different from default, even if
-			// same as default ("def") because default may be
-			// changed by the admin since m->m_off >= 0. nah,
-			// let's try to reduce cgi parm pollution...
-			if ( v == def ) continue;
-			//if ( m->m_sprpg && up + gbstrlen(cgi) + 10 < upend )
-			//	up += sprintf ( up , "%s=%li&", cgi , v );
-			//if ( m->m_sprpp && pp + gbstrlen(cgi) + 80 < ppend )
-			//	pp += sprintf ( pp , "<input type=hidden "
-			//			"name=%s value=\"%li\">\n", 
-			//			cgi , v );
-		}
-		else if ( m->m_type == TYPE_STRING ||
-			  m->m_type == TYPE_STRINGBOX ) {
-			//if ( m->m_cgi && strcmp ( m->m_cgi, "qlang" ) == 0 )
-			//	log("hey2");
-			char *def = *(char **)x;
-			// get overriding from http request, if any
-			long len = 0;
-			char *v = NULL;
-			// . cgi parms override cookie
-			// . is this url encoded?
-			v = r->getString ( cgi , &len , v );
-			// if not specified explicitly, default it and continue
-			if ( ! v ) {
-				// sanity
-				if  ( ! def ) def = "";
-				*(char **)x = def;
-				// length preceeds char ptr in SearchInput
-				*(long *)(x - 4) = gbstrlen(def);
-				continue;
+	/* --- Virtual host language detection --- */
+	/*
+	if(r->getHost()) {
+		bool langset = getLanguageFromAbbr(m_defaultSortLanguage);
+		char *cp;
+		if(!langset && (cp = strrchr(r->getHost(), '.'))) {
+			uint8_t lang = getLanguageFromUserAgent(++cp);
+			if(lang) {
+				// char langbuf[128];
+		// sprintf(langbuf, "qlang=%s\0", getLanguageAbbr(lang));
+			//m_defaultSortLanguage = getLanguageAbbr(lang);
+                                char *tmp = getLanguageAbbr(lang);
+                                strncpy(m_defaultSortLanguage, tmp, 6);
+				// log(LOG_INFO,
+			//	getLanguageString(lang), r->getHost(), this);
 			}
-			// if something was specified, override, it might
-			// be length zero, too
-			*(char **)x = v;
-			// length preceeds char ptr in SearchInput
-			*(long *)(x - 4) = len;
-			// do not store if query, that needs to be last so
-			// related topics can append to it
-			//if ( cgi[0] == 'q' && cgi[1] == '\0' ) continue;
-			// should we propagate it? true by default
-			//if ( ! m->m_sprop ) continue;
-			// if not given at all, do not propagate
-			//if ( ! vp ) continue;
-			// if it is the same as its default, and the default is
-			// always from m_def and never from the CollectionRec, 
-			// then do not both storing it in here! what's the 
-			// point?
-			//if ( v && v == def && !strcmp(def,v) && m->m_off < 0)
-			//	continue;
-			// Need to set qcs based on page encoding...
-			// not propagated
-			if (!strncmp(cgi, "qcs", 3))
-				continue;
-			// do not propagate defaults
-			if ( v == def ) continue;
-			// store in up if different from default, even if
-			// same as default ("def") because default may be
-			// changed by the admin since m->m_off >= 0
-			//if( m->m_sprpg && up+gbstrlen(cgi)+len+6  < upend ) {
-			//	up += sprintf ( up , "%s=", cgi );
-			//	up  += urlEncode ( up , upend-up-2 , v , len );
-			//	*up++ = '&';
-			//}
-			// propogate hidden inputs
-			//if ( m->m_sprpp && up+gbstrlen(cgi)+len+80 < upend )
-			//	pp += sprintf ( pp , "<input type=hidden "
-			//			"name=%s value=\"%s\">\n", 
-			//			cgi , v );
 		}
 	}
+	*/
+	/* --- End Virtual host language detection --- */
 
-	// now add the special "qh" parm whose default value changes 
-	// depending on if we are widget related or not
-	long qhDefault = 1;
-	m_doQueryHighlighting = r->getLong("qh",qhDefault);
+
+	//char *qs1 = m_defaultSortLanguage;
+
+	// this overrides though
+	//int32_t qlen2;
+	//char *qs2 = r->getString ("qlang",&qlen2,NULL);
+	//if ( qs2 ) qs1 = qs2;
+	
+	//m_queryLang = getLanguageFromAbbr ( qs1 );
+
+	//m_queryLang = detectQueryLanguage();
+
+	//char *qs1 = getLangAbbr(m_queryLang);
+
+	// this parm is in Parms.cpp and should be set
+	char *langAbbr = m_defaultSortLang;
+
+	// Parms.cpp sets it to an empty string, so make that null
+	// if Parms.cpp set it to NULL it seems it comes out as "(null)"
+	// i guess because we sprintf it or something.
+	if ( langAbbr && langAbbr[0] == '\0' )
+		langAbbr = NULL;
+
+	// if &qlang was not given explicitly fall back to coll rec
+	if ( cr && ! langAbbr )
+		langAbbr = cr->m_defaultSortLanguage2;
+
+	// if no coll rec use language unknown
+	if ( ! langAbbr )
+		langAbbr = "xx";
+
+	log(LOG_INFO,"query: using default lang of %s", langAbbr );
+
+	// get code
+	m_queryLangId = getLangIdFromAbbr ( langAbbr );
+
+	// allow for 'xx', which means langUnknown
+	if ( m_queryLangId == langUnknown &&
+	     langAbbr &&
+	     langAbbr[0] &&
+	     langAbbr[0]!='x' )
+		log("query: qlang of \"%s\" is NOT SUPPORTED. using "
+		    "langUnknown, \"xx\".",langAbbr);
+
+	int32_t maxQueryTerms = cr->m_maxQueryTerms;
+
+	// . the query to use for highlighting... can be overriden with "hq"
+	// . we need the language id for doing synonyms
+	if ( m_prepend && m_prepend[0] )
+		m_hqq.set2 ( m_prepend , m_queryLangId , true ,maxQueryTerms);
+	else if ( m_highlightQuery && m_highlightQuery[0] )
+		m_hqq.set2 (m_highlightQuery,m_queryLangId,true,maxQueryTerms);
+	else if ( m_query && m_query[0] )
+		m_hqq.set2 ( m_query , m_queryLangId , true,maxQueryTerms);
+
+	// log it here
+	log(LOG_INFO,
+	    "query: got query %s (len=%i)"
+	    ,m_sbuf1.getBufStart()
+	    ,m_sbuf1.length());
+
+	// . now set from m_qbuf1, the advanced/composite query buffer
+	// . returns false and sets g_errno on error (ETOOMANYOPERANDS)
+	if ( ! m_q.set2 ( m_sbuf1.getBufStart(), 
+			  m_queryLangId , 
+			  m_queryExpansion ,
+			  true , // use QUERY stopwords?
+			  maxQueryTerms ) ) {
+		g_msg = " (error: query has too many operands)";
+		return false;
+	}
+
+	m_q.m_containingParent = (void *)this;
+
+	if ( m_q.m_truncated && m_q.m_isBoolean ) {
+		g_errno = EQUERYTOOBIG;
+		g_msg = " (error: query is too long)";
+		return false;
+	}
+
+
+	if ( m_hideAllClustered )
+		m_doSiteClustering = true;
+
+	// turn off some parms
+	if ( m_q.m_hasUrlField  ) 
+		m_ipRestrictForTopics = false;
+	if ( m_q.m_hasIpField   )
+		m_ipRestrictForTopics = false;
+	if ( m_q.m_hasPositiveSiteField ) {
+		m_ipRestrictForTopics = false;
+		m_doSiteClustering    = false;
+	}
+
+	if ( cr && ! cr->m_ipRestrict )
+		m_ipRestrictForTopics = false;
+
+	if ( m_q.m_hasQuotaField ) {
+		m_doSiteClustering    = false;
+		m_doDupContentRemoval = false;
+	}
+
+	if ( ! m_doSiteClustering )
+		m_hideAllClustered = false;
+
+	// sanity check
+	if(m_firstResultNum < 0) m_firstResultNum = 0;
+
+	// DEBUG: temp hack
+	// static bool first = true;
+	//  if ( first ) { 
+	//  	first = false;
+	//  	m_firstResultNum = 10;
+	//  }
+
+
+	// . if query has url: or site: term do NOT use cache by def.
+	// . however, if spider is off then use the cache by default
+	if ( m_useCache == -1 && g_conf.m_spideringEnabled ) {
+		if      ( m_q.m_hasPositiveSiteField ) m_useCache = 0;
+		else if ( m_q.m_hasIpField   ) m_useCache = 0;
+		else if ( m_q.m_hasUrlField  ) m_useCache = 0;
+		else if ( m_sites && m_sites[0] ) m_useCache = 0;
+		//else if ( m_whiteListBuf.length() ) m_useCache = 0;
+		else if ( m_url && m_url[0]   ) m_useCache = 0;
+	}
+
+	// if useCache is still -1 then turn it on
+	if ( m_useCache == -1 ) m_useCache = 1;
+
+	// never use cache if doing a rerank (msg3b)
+	//if ( m_rerankRuleset >= 0 ) m_useCache = 0;
+	bool readFromCache = false;
+	if ( m_useCache ==  1  ) readFromCache = true;
+	if ( m_rcache   ==  0  ) readFromCache = false;
+	if ( m_useCache ==  0  ) readFromCache = false;
+	// if useCache is false, don't write to cache if it was not specified
+	if ( m_wcache == -1 ) {
+		if ( m_useCache ==  0 ) m_wcache = 0;
+		else                    m_wcache = 1;
+	}
+	// save it
+	m_rcache = readFromCache;
 
 
 	//
@@ -633,249 +592,13 @@ m	if (! cr->hasSearchPermission ( sock, encapIp ) ) {
 	tg->m_dedup = true;
 	// need to be on at least 2 pages!
 	tg->m_minDocCount = 2;
-	tg->m_ipRestrict = true;
+	tg->m_ipRestrict = m_ipRestrictForTopics;
 	tg->m_dedupSamplePercent = 80;
 	tg->m_topicRemoveOverlaps = true;
 	tg->m_topicSampleSize = 4096;
 	// max sequential punct chars allowedin a topic
 	tg->m_topicMaxPunctLen = 1;
 	m_numTopicGroups = 1;
-
-	// use "&dg=1" to debug gigabits
-	m_debugGigabits = r->getLong("dg",0);
-
-
-	// . omit scoring info from the xml feed for now
-	// . we have to roll this out to gk144 net i think
-	if ( xml > 0 )
-		m_getDocIdScoringInfo = 0;
-
-	// turn off by default!
-	if ( ! r->getLong("gigabits",0) ) {
-		m_numTopicGroups = 0;
-	}
-
-
-	//////////////////////////////////////
-	//
-	// transform input into classes
-	//
-	//////////////////////////////////////
-
-	// USER_ADMIN, ...
-	m_username = g_users.getUsername(r);
-	// if collection is NULL default to one in g_conf
-	if ( ! m_coll2 || ! m_coll2[0] ) { 
-		//m_coll = g_conf.m_defaultColl; 
-		m_coll2 = g_conf.getDefaultColl(r->getHost(), r->getHostLen());
-		m_collLen2 = gbstrlen(coll); 
-	}
-
-	// reset this
-	m_gblang = 0;
-
-	// use gblang then!
-	long gglen;
-	char *gg = r->getString ( "clang" , &gglen , NULL );
-	if ( gg && gglen > 1 )
-		m_gblang = getLanguageFromAbbr(gg);
-
-	// allow for "qlang" if still don't have it
-	//long gglen2;
-	//char *gg2 = r->getString ( "qlang" , &gglen2 , NULL );
-	//if ( m_gblang == 0 && gg2 && gglen2 > 1 )
-	//	m_gblang = getLanguageFromAbbr(gg2);
-	
-	// fix query by removing lang:xx from ask.com queries
-	//char *end = m_query + m_queryLen -8;
-	//if ( m_queryLen > 8 && m_query && end > m_query && 
-	//     strncmp(end," lang:",6)==0 ) {
-	//	char *asklang = m_query+m_queryLen - 2;
-	//	m_gblang = getLanguageFromAbbr(asklang);
-	//	m_queryLen -= 8;
-	//	m_query[m_queryLen] = 0;
-	//	
-	//}
-
-	// . returns false and sets g_errno on error
-	// . sets m_qbuf1 and m_qbuf2
-	if ( ! setQueryBuffers () ) return false;
-
-
-	/* --- Virtual host language detection --- */
-	if(r->getHost()) {
-		bool langset = getLanguageFromAbbr(m_defaultSortLanguage);
-		char *cp;
-		if(!langset && (cp = strrchr(r->getHost(), '.'))) {
-			uint8_t lang = getLanguageFromUserAgent(++cp);
-			if(lang) {
-				// char langbuf[128];
-				// sprintf(langbuf, "qlang=%s\0", getLanguageAbbr(lang));
-				//m_defaultSortLanguage = getLanguageAbbr(lang);
-                                char *tmp = getLanguageAbbr(lang);
-                                strncpy(m_defaultSortLanguage, tmp, 6);
-				// log(LOG_INFO,
-				//	getLanguageString(lang), r->getHost(), this);
-			}
-		}
-	}
-	/* --- End Virtual host language detection --- */
-
-	char *qs1 = m_defaultSortLanguage;
-
-	// this overrides though
-	//long qlen2;
-	//char *qs2 = r->getString ("qlang",&qlen2,NULL);
-	//if ( qs2 ) qs1 = qs2;
-	
-	m_queryLang = getLanguageFromAbbr ( qs1 );
-
-	if ( qs1 && qs1[0] && ! m_queryLang )
-		log("query: qlang of \"%s\" is NOT SUPPORTED",qs1);
-
-
-
-
-
-	// . the query to use for highlighting... can be overriden with "hq"
-	// . we need the language id for doing synonyms
-	if ( m_highlightQuery && m_highlightQuery[0] )
-		m_hqq.set2 ( m_highlightQuery , m_queryLang , true );
-	else if ( m_query && m_query[0] )
-		m_hqq.set2 ( m_query , m_queryLang , true );
-
-	// log it here
-	log("query: got query %s",m_sbuf1.getBufStart());
-
-	// . now set from m_qbuf1, the advanced/composite query buffer
-	// . returns false and sets g_errno on error (ETOOMANYOPERANDS)
-	if ( ! m_q->set2 ( m_sbuf1.getBufStart(), 
-			   m_queryLang , 
-			   m_queryExpansion ) ) {
-		g_msg = " (error: query has too many operands)";
-		return false;
-	}
-
-	if ( m_q->m_truncated && m_q->m_isBoolean ) {
-		g_errno = ETOOMANYOPERANDS;
-		g_msg = " (error: query has too many operands)";
-		return false;
-	}
-
-
-	// do not allow querier to use the links: query operator unless they 
-	// are admin or the search controls explicitly allow links:
-	//if ( m_q->m_hasLinksOperator && ! m_isAdmin  &&
-	//     !cr->m_allowLinksSearch ) {
-	//	g_errno = ENOPERM;
-	//	g_msg = " (error: permission denied)";
-	//	return false;
-	//}
-
-	// miscellaneous
-	m_showBanned = false;
-	//if ( m_isAdmin ) m_showBanned = true;
-	// admin can say &sb=0 explicitly to not show banned results
-	if ( m_isAdmin ) m_showBanned = r->getLong("sb",m_showBanned);
-
-
-	if ( m_q->m_hasUrlField  ) m_ipRestrictForTopics = false;
-	if ( m_q->m_hasIpField   ) {
-		m_ipRestrictForTopics = false;
-		//if( m_isAdmin ) m_showBanned = true;
-	}
-	if ( m_q->m_hasPositiveSiteField ) {
-		m_ipRestrictForTopics = false;
-		m_doSiteClustering    = false;
-	}
-	if ( m_q->m_hasQuotaField ) {
-		m_doSiteClustering    = false;
-		m_doDupContentRemoval = false;
-	}
-
-
-
-	long codeLen;
-	char *code = r->getString ("code",&codeLen,NULL);
-	// set m_endUser
-	if ( ! codeLen || ! code || strcmp(code,"gbfront")==0 )
-		m_endUser = true;
-	else
-		m_endUser = false;
-
-
-	if(codeLen && !m_endUser) {
-		m_maxResults = cr->m_maxSearchResultsForClients;
-	}
-	else {
-		m_maxResults = cr->m_maxSearchResults;
-	}
-	// don't let admin bewilder himself
-	if ( m_maxResults < 1 ) m_maxResults = 500;
-
-	// we can't get this kind of constraint from generic Parms routines
-	if ( m_firstResultNum + m_docsWanted > m_maxResults ) 
-		m_firstResultNum = m_maxResults - m_docsWanted;
-	if(m_firstResultNum < 0) m_firstResultNum = 0;
-
-	// if useCache is -1 then pick a default value
-	if ( m_useCache == -1 ) {
-		// assume yes as default
-		m_useCache = 1;
-		// . if query has url: or site: term do NOT use cache by def.
-		// . however, if spider is off then use the cache by default
-		if ( g_conf.m_spideringEnabled ) {
-			if      ( m_q->m_hasPositiveSiteField ) m_useCache = 0;
-			else if ( m_q->m_hasIpField   ) m_useCache = 0;
-			else if ( m_q->m_hasUrlField  ) m_useCache = 0;
-			else if ( m_siteLen  > 0      ) m_useCache = 0;
-			else if ( m_sitesLen > 0      ) m_useCache = 0;
-			else if ( m_urlLen   > 0      ) m_useCache = 0;
-		}
-	}
-	// never use cache if doing a rerank (msg3b)
-	//if ( m_rerankRuleset >= 0 ) m_useCache = 0;
-	bool readFromCache = false;
-	if ( m_useCache ==  1  ) readFromCache = true;
-	if ( m_rcache   ==  0  ) readFromCache = false;
-	if ( m_useCache ==  0  ) readFromCache = false;
-	// if useCache is false, don't write to cache if it was not specified
-	if ( m_wcache == -1 ) {
-		if ( m_useCache ==  0 ) m_wcache = 0;
-		else                    m_wcache = 1;
-	}
-	// save it
-	m_rcache = readFromCache;
-
-	/*
-	m_language = 0;
-	// convert m_languageCode to a number for m_language
-	if ( m_languageCode ) {
-		m_language = (unsigned char)atoi(m_languageCode);
-		if ( m_language == 0 )
-			m_language = getLanguageFromAbbr(m_languageCode);
-	}
-	*/
-
-	// a hack for buzz for backwards compatibility
-	//if ( strstr ( m_q->m_orig,"gbkeyword:r36p1" ) )
-	//	m_ruleset = 36;
-
-	//
-	// . turn this off for now
-	// . it is used in setClusterLevels() to use clusterdb to filter our
-	//   search results via Msg39, so it is not the most efficient.
-	// . plus i am deleting most foreign language pages from the index
-	//   so we can just focus on english and that will give us more english
-	//   pages that we could normally get. we don't have resources to
-	//   de-spam the other languages, etc.
-	// . turn it back on, i took out the setClusterLevels() use of that
-	//   because we got the langid in the posdb keys now
-	//
-	//m_language = 0;
-
-	// convert m_defaultSortCountry to a number for m_countryHint
-	m_countryHint = g_countryCode.getIndexOfAbbr(m_defaultSortCountry);
 
 
 	return true;
@@ -885,16 +608,17 @@ m	if (! cr->hasSearchPermission ( sock, encapIp ) ) {
 // . m_qbuf1[] is the advanced query
 // . m_qbuf2[] is the query to be used for spell checking
 // . returns false and set g_errno on error
-bool SearchInput::setQueryBuffers ( ) {
+bool SearchInput::setQueryBuffers ( HttpRequest *hr ) {
 
 	m_sbuf1.reset();
 	m_sbuf2.reset();
 	m_sbuf3.reset();
 
-	short qcs = csUTF8;
-	if (m_queryCharset && m_queryCharsetLen){
+	int16_t qcs = csUTF8;
+	if (m_queryCharset && m_queryCharset[0]){
 		// we need to convert the query string to utf-8
-		qcs = get_iana_charset(m_queryCharset, m_queryCharsetLen);
+		int32_t qclen = gbstrlen(m_queryCharset);
+		qcs = get_iana_charset(m_queryCharset, qclen );
 		if (qcs == csUnknown) {
 			//g_errno = EBADCHARSET;
 			//g_msg = "(error: unknown query charset)";
@@ -903,16 +627,17 @@ bool SearchInput::setQueryBuffers ( ) {
 		}
 	}
 	// prepend sites terms
-	long numSites = 0;
+	int32_t numSites = 0;
 	char *csStr = NULL;
 	numSites = 0;
 	csStr = get_charset_str(qcs);
 
+	/*
 	if ( m_sites && m_sites[0] ) {
 		char *s = m_sites;
 		char *t;
-		long  len;
-		m_sbuf1.pushChar('(');//*p++ = '(';
+		int32_t  len;
+		m_sbuf1.pushChar('(');// *p++ = '(';
 	loop:
 		// skip white space
 		while ( *s && ! is_alnum_a(*s) ) s++;
@@ -928,8 +653,8 @@ bool SearchInput::setQueryBuffers ( ) {
 		m_sbuf1.safeStrcpy ( "site:" );
 		//p += ucToUtf8(p, pend-p,s, len, csStr, 0,0);
 		m_sbuf1.safeMemcpy ( s , len );
-		//memcpy ( p , s , len     ); p += len;
-		//*p++ = ' ';
+		//gbmemcpy ( p , s , len     ); p += len;
+		// *p++ = ' ';
 		m_sbuf1.pushChar(' ');
 		s = t;
 		numSites++;
@@ -939,64 +664,194 @@ bool SearchInput::setQueryBuffers ( ) {
 		// inc totalLen
 		m_sitesQueryLen = m_sitesLen + (numSites * 10);
 	}
-	// append site: term
-	if ( m_siteLen > 0 ) {
-		//if ( p > pstart ) *p++ = ' ';
-		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
-		//memcpy ( p , "+site:" , 6 ); p += 6;
-		m_sbuf1.safePrintf("+site:");
-		//memcpy ( p , m_site , m_siteLen ); p += m_siteLen;
-		m_sbuf1.safeMemcpy(m_site,m_siteLen);
-	}
+	*/
 
-
-	// append gblang: term
-	if( m_gblang > 0 ) {
+	// prepend
+	char *qp = hr->getString("prepend",NULL,NULL);
+	if( qp && qp[0] ) {
 		//if( p > pstart ) *p++ =  ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
-		//p += sprintf( p, "+gblang:%li |", m_gblang );
-		m_sbuf1.safePrintf( "+gblang:%li |", m_gblang );
+		//p += sprintf( p, "+gblang:%"INT32" |", m_gblang );
+		m_sbuf1.safePrintf( "%s", qp );
 	}
+
+	// boolean OR terms
+	bool boolq = false;
+	char *any = hr->getString("any",NULL);
+	bool first = true;
+	if ( any ) {
+		char *s = any;
+		char *send = any + gbstrlen(any);
+	 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	 	if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
+		while (s < send) {
+			while (isspace(*s) && s < send) s++;
+			char *s2 = s+1;
+			if (*s == '\"') {
+				// if there's no closing quote just treat
+				// the end of the line as such
+				while (*s2 != '\"' && s2 < send) s2++;
+				if (s2 < send) s2++;
+			} else {
+				while (!isspace(*s2) && s2 < send) s2++;
+			}
+			if ( first ) m_sbuf1.safeStrcpy("(");
+			if ( first ) m_sbuf2.safeStrcpy("(");
+			if ( ! first ) m_sbuf1.safeStrcpy(" OR ");
+			if ( ! first ) m_sbuf2.safeStrcpy(" OR ");
+			first = false;
+			m_sbuf1.safeMemcpy ( s , s2 - s );
+			m_sbuf2.safeMemcpy ( s , s2 - s );
+			s = s2 + 1;
+		}
+	}
+	if ( ! first ) m_sbuf1.safeStrcpy(") AND ");
+	if ( ! first ) m_sbuf2.safeStrcpy(") AND ");
+	if ( ! first ) boolq = true;
+
+
+
+	// and this
+	if ( m_secsBack > 0 ) {
+		int32_t timestamp = getTimeGlobalNoCore();
+		timestamp -= m_secsBack;
+		if ( timestamp <= 0 ) timestamp = 0;
+		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+		m_sbuf1.safePrintf("gbminint:gbspiderdate:%"UINT32"",timestamp);
+	}
+
+	if ( m_sortBy == 1 ) {
+		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+		m_sbuf1.safePrintf("gbsortbyint:gbspiderdate");
+	}
+
+	if ( m_sortBy == 2 ) {
+		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+		m_sbuf1.safePrintf("gbrevsortbyint:gbspiderdate");
+	}
+
+	if ( m_sortBy == 3 ) {
+		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+		m_sbuf1.safePrintf("gbsortbyint:gbsitenuminlinks");
+	}
+
+	char *ft = m_filetype;
+	if ( ft && strcasecmp(ft,"any")==0 ) ft = NULL;
+	if ( ft && ! ft[0] ) ft = NULL;
+	if ( ft ) {
+		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+		m_sbuf1.safePrintf("filetype:%s",ft);
+	}
+
+	// facet prepend en masse
+	// for ( int32_t i = 1 ; i <= 6 ; i++ ) {
+	// 	char tmp[12];
+	// 	sprintf(tmp,"facet%"INT32"",i);
+	// 	char *ff = hr->getString(tmp,NULL);
+	// 	if ( ! ff ) continue;
+	// 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	// 	m_sbuf1.safePrintf("%s",ff);
+	// }
+
+	// one at a time for now
+	char *ff = hr->getString("facet",NULL);
+	if ( ff ) {
+	 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	 	m_sbuf1.safePrintf("%s",ff);
+	 }
+
+
+	// append site: term
+	// if ( m_sites && m_sites[0] ) {
+	// 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	// 	m_sbuf1.safePrintf("+site:");
+	// 	m_sbuf1.safeStrcpy(m_sites);
+	// }
+
+	if ( m_familyFilter ) {
+	 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	 	//if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
+	 	m_sbuf1.safePrintf( "+gbisadult:0");
+	 	//m_sbuf2.safePrintf( "+gbisadult:0");
+		if ( ! boolq ) {
+			m_sbuf1.safeStrcpy(" |");
+			//m_sbuf2.safeStrcpy(" |");
+		}
+		else {
+			m_sbuf1.safeStrcpy(" AND ");
+			//m_sbuf2.safeStrcpy(" AND ");
+		}
+
+	}
+
+	// PRE-pend gblang: term
+	int32_t gblang = hr->getLong("gblang",-1);
+	if( gblang >= 0 ) {
+	 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	 	if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
+	 	m_sbuf1.safePrintf( "+gblang:%"INT32"", gblang );
+	 	m_sbuf2.safePrintf( "+gblang:%"INT32"", gblang );
+		if ( ! boolq ) {
+			m_sbuf1.safeStrcpy(" |");
+			m_sbuf2.safeStrcpy(" |");
+		}
+		else {
+			m_sbuf1.safeStrcpy(" AND ");
+			m_sbuf2.safeStrcpy(" AND ");
+		}
+	}
+
 	// bookmark here so we can copy into st->m_displayQuery below
-	//long displayQueryOffset = m_sbuf1.length();
+	//int32_t displayQueryOffset = m_sbuf1.length();
 	// append url: term
-	if ( m_urlLen > 0 ) {
-		//if ( p > pstart ) *p++ = ' ';
-		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
-		//memcpy ( p , "+url:" , 5 ); p += 5;
-		m_sbuf1.safeStrcpy ( "+url:");
-		//memcpy ( p , m_url , m_urlLen ); p += m_urlLen;
-		m_sbuf1.safeMemcpy ( m_url , m_urlLen );
-	}
+	// if ( m_url && m_url[0] ) {
+	// 	//if ( p > pstart ) *p++ = ' ';
+	// 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	// 	//gbmemcpy ( p , "+url:" , 5 ); p += 5;
+	// 	m_sbuf1.safeStrcpy ( "+url:");
+	// 	//gbmemcpy ( p , m_url , m_urlLen ); p += m_urlLen;
+	// 	m_sbuf1.safeStrcpy ( m_url );
+	// }
 	// append url: term
-	if ( m_linkLen > 0 ) {
-		//if ( p > pstart ) *p++ = ' ';
-		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
-		//memcpy ( p , "+link:" , 6 ); p += 6;
+	if ( m_link && m_link[0] ) {
+	 	if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
+	 	if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
 		m_sbuf1.safeStrcpy ( "+link:");
-		//memcpy ( p , m_link , m_linkLen ); p += m_linkLen;
-		m_sbuf1.safeMemcpy ( m_link , m_linkLen );
+		m_sbuf2.safeStrcpy ( "+link:");
+		m_sbuf1.safeStrcpy ( m_link );
+		m_sbuf2.safeStrcpy ( m_link );
+		if ( ! boolq ) {
+			m_sbuf1.safeStrcpy(" |");
+			m_sbuf2.safeStrcpy(" |");
+		}
+		else {
+			m_sbuf1.safeStrcpy(" AND ");
+			m_sbuf2.safeStrcpy(" AND ");
+		}
 	}
+	m_sbuf1.setLabel("sisbuf1");
+	m_sbuf2.setLabel("sisbuf2");
+	m_sbuf3.setLabel("sisbuf3");
 	// append the natural query
-	if ( m_queryLen > 0 ) {
+	if ( m_query && m_query[0] ) {
 		//if ( p  > pstart  ) *p++  = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
 		//p += ucToUtf8(p, pend-p, m_query, m_queryLen, csStr, 0,0);
-		m_sbuf1.safeMemcpy ( m_query , m_queryLen );
-		//memcpy ( p  , m_query , m_queryLen ); p  += m_queryLen;
+		m_sbuf1.safeStrcpy ( m_query );
+		//gbmemcpy ( p  , m_query , m_queryLen ); p  += m_queryLen;
 		// add to spell checked buf, too		
 		//if ( p2 > pstart2 ) *p2++ = ' ';
 		if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
 		//p2 +=ucToUtf8(p2, pend2-p2, m_query, m_queryLen, csStr, 0,0);
-		m_sbuf2.safeMemcpy ( m_query , m_queryLen );
-		//memcpy ( p2 , m_query , m_queryLen ); p2 += m_queryLen;
+		m_sbuf2.safeStrcpy ( m_query );
+		//gbmemcpy ( p2 , m_query , m_queryLen ); p2 += m_queryLen;
 	}
-	if ( m_query2Len > 0 ) {
-		//if ( p3 > pstart3 ) *p3++ = ' ';
-		if ( m_sbuf3.length() ) m_sbuf3.pushChar(' ');
-		//p3+=ucToUtf8(p3, pend3-p3, m_query2, m_query2Len, csStr,0,0);
-		m_sbuf3.safeMemcpy ( m_query2 , m_query2Len );
-	}
+	// if ( m_query2 && m_query2[0] ) {
+	// 	//if ( p3 > pstart3 ) *p3++ = ' ';
+	// 	if ( m_sbuf3.length() ) m_sbuf3.pushChar(' ');
+	// 	//p3+=ucToUtf8(p3, pend3-p3, m_query2, m_query2Len, csStr,0,0);
+	// 	m_sbuf3.safeStrcpy ( m_query2 );
+	// }
 	//if (g_errno == EILSEQ){ // illegal character seq
 	//	log("query: bad char set");
 	//	g_errno = 0;
@@ -1004,15 +859,22 @@ bool SearchInput::setQueryBuffers ( ) {
 	//	if (qcs != csISOLatin1) {qcs = csUTF8;goto doOver;}
 	//}
 	// append quoted phrases to query
-	if ( m_quoteLen1 > 0 ) {
+	if ( m_quote1 && m_quote1[0] ) {
 		//if ( p  > pstart  ) *p++  = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
 		//*p++ = '+';
 		//*p++ = '\"';
-		m_sbuf1.safeStrcpy("+\"");
+		if ( ! boolq ) {
+			m_sbuf1.safeStrcpy(" +\"");
+			m_sbuf2.safeStrcpy(" +\"");
+		}
+		else {
+			m_sbuf1.safeStrcpy(" AND \"");
+			m_sbuf2.safeStrcpy(" AND \"");
+		}
 		//p += ucToUtf8(p, pend-p, m_quote1, m_quoteLen1, csStr, 0,0);
-		m_sbuf1.safeMemcpy ( m_quote1 , m_quoteLen1 );
-		//memcpy ( p , m_quote1 , m_quoteLen1 ); p += m_quoteLen1 ;
+		m_sbuf1.safeStrcpy ( m_quote1 );
+		//gbmemcpy ( p , m_quote1 , m_quoteLen1 ); p += m_quoteLen1 ;
 		//*p++ = '\"';
 		m_sbuf1.safeStrcpy("\"");
 		// add to spell checked buf, too
@@ -1020,10 +882,9 @@ bool SearchInput::setQueryBuffers ( ) {
 		if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
 		//*p2++ = '+';
 		//*p2++ = '\"';
-		m_sbuf2.safeStrcpy("+\"");
 		//p2+=ucToUtf8(p2, pend2-p2, m_quote1, m_quoteLen1, csStr,0,0);
-		m_sbuf2.safeMemcpy ( m_quote1 , m_quoteLen1 );
-		//memcpy ( p2 , m_quote1 , m_quoteLen1 ); p2 += m_quoteLen1 ;
+		m_sbuf2.safeStrcpy ( m_quote1 );
+		//gbmemcpy ( p2 , m_quote1 , m_quoteLen1 ); p2 += m_quoteLen1 ;
 		//*p2++ = '\"';
 		m_sbuf2.safeStrcpy("\"");
 	}
@@ -1032,15 +893,25 @@ bool SearchInput::setQueryBuffers ( ) {
 	//	if (qcs == csUTF8) {qcs = csISOLatin1;goto doOver;}
 	//	if (qcs != csISOLatin1) {qcs = csUTF8;goto doOver;}
 	//}
-	if ( m_quoteLen2 > 0 ) {
+	if ( m_quote2 && m_quote2[0] ) {
 		//if ( p  > pstart  ) *p++  = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
 		//*p++ = '+';
 		//*p++ = '\"';
-		m_sbuf1.safeStrcpy("+\"");
+
+		if ( ! boolq ) {
+			m_sbuf1.safeStrcpy(" +\"");
+			m_sbuf2.safeStrcpy(" +\"");
+		}
+		else {
+			m_sbuf1.safeStrcpy(" AND \"");
+			m_sbuf2.safeStrcpy(" AND \"");
+		}
+
+		//m_sbuf1.safeStrcpy("+\"");
 		//p += ucToUtf8(p, pend-p, m_quote2, m_quoteLen2, csStr, 0,0);
-		m_sbuf1.safeMemcpy ( m_quote2 , m_quoteLen2 );
-		//memcpy ( p , m_quote2 , m_quoteLen2 ); p += m_quoteLen2 ;
+		m_sbuf1.safeStrcpy ( m_quote2 );
+		//gbmemcpy ( p , m_quote2 , m_quoteLen2 ); p += m_quoteLen2 ;
 		//*p++ = '\"';
 		m_sbuf1.safeStrcpy("\"");
 		// add to spell checked buf, too
@@ -1048,10 +919,10 @@ bool SearchInput::setQueryBuffers ( ) {
 		if ( m_sbuf2.length() ) m_sbuf2.pushChar(' ');
 		//*p2++ = '+';
 		//*p2++ = '\"';
-		m_sbuf2.safeStrcpy("+\"");
+		//m_sbuf2.safeStrcpy("+\"");
 		//p2+=ucToUtf8(p2, pend2-p2, m_quote2, m_quoteLen2, csStr,0,0);
-		m_sbuf2.safeMemcpy ( m_quote2 , m_quoteLen2 );
-		//memcpy ( p2 , m_quote2 , m_quoteLen2 ); p2 += m_quoteLen2 ;
+		m_sbuf2.safeStrcpy ( m_quote2 );
+		//gbmemcpy ( p2 , m_quote2 , m_quoteLen2 ); p2 += m_quoteLen2 ;
 		//*p2++ = '\"';
 		m_sbuf2.safeStrcpy("\"");
 	}
@@ -1060,10 +931,11 @@ bool SearchInput::setQueryBuffers ( ) {
 	//	if (qcs == csUTF8) {qcs = csISOLatin1;goto doOver;}
 	//	if (qcs != csISOLatin1) {qcs = csUTF8;goto doOver;}
 	//}
-	
+
 	// append plus terms
-	if ( m_plusLen > 0 ) {
-		char *s = m_plus, *send = m_plus + m_plusLen;
+	if ( m_plus && m_plus[0] ) {
+		char *s = m_plus;
+		char *send = m_plus + gbstrlen(m_plus);
 		//if ( p > pstart && p < pend ) *p++  = ' ';
 		//if ( p2 > pstart2 && p2 < pend2) *p2++ = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
@@ -1079,11 +951,20 @@ bool SearchInput::setQueryBuffers ( ) {
 			} else {
 				while (!isspace(*s2) && s2 < send) s2++;
 			}
-			if (s < send) break;
+			//if (s2 < send) break;
 			//if (p < pend) *p++ = '+';
 			//if (p2 < pend2) *p2++ = '+';
-			m_sbuf1.pushChar('+');
-			m_sbuf2.pushChar('+');
+			//m_sbuf1.pushChar('+');
+			//m_sbuf2.pushChar('+');
+			if ( ! boolq ) {
+				m_sbuf1.safeStrcpy("+");
+				m_sbuf2.safeStrcpy("+");
+			}
+			else {
+				m_sbuf1.safeStrcpy(" AND ");
+				m_sbuf2.safeStrcpy(" AND ");
+			}
+
 			//p += ucToUtf8(p, pend-p, s, s2-s, csStr, 0,0);
 			//p2 += ucToUtf8(p2, pend2-p2, s, s2-s, csStr, 0,0);
 			m_sbuf1.safeMemcpy ( s , s2 - s );
@@ -1112,8 +993,9 @@ bool SearchInput::setQueryBuffers ( ) {
 
 	}  
 	// append minus terms
-	if ( m_minusLen > 0 ) {
-		char *s = m_minus, *send = m_minus + m_minusLen;
+	if ( m_minus && m_minus[0] ) {
+		char *s = m_minus;
+		char *send = m_minus + gbstrlen(m_minus);
 		//if ( p > pstart && p < pend ) *p++  = ' ';
 		//if ( p2 > pstart2 && p2 < pend2) *p2++ = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
@@ -1129,11 +1011,21 @@ bool SearchInput::setQueryBuffers ( ) {
 			} else {
 				while (!isspace(*s2) && s2 < send) s2++;
 			}
-			if (s < send) break;
+			if (s2 < send) break;
 			//if (p < pend) *p++ = '-';
 			//if (p2 < pend2) *p2++ = '-';
-			m_sbuf1.pushChar('-');
-			m_sbuf2.pushChar('-');
+			// m_sbuf1.pushChar('-');
+			// m_sbuf2.pushChar('-');
+
+			if ( ! boolq ) {
+				m_sbuf1.safeStrcpy("-");
+				m_sbuf2.safeStrcpy("-");
+			}
+			else {
+				m_sbuf1.safeStrcpy(" AND NOT ");
+				m_sbuf2.safeStrcpy(" AND NOT ");
+			}
+
 			//p += ucToUtf8(p, pend-p, s, s2-s, csStr, 0,0);
 			//p2 += ucToUtf8(p2, pend2-p2, s, s2-s, csStr, 0,0);
 			m_sbuf1.safeMemcpy ( s , s2 - s );
@@ -1161,21 +1053,21 @@ bool SearchInput::setQueryBuffers ( ) {
 		}
 	}
 	// append gbkeyword:numinlinks if they have &mininlinks=X, X>0
-	long minInlinks = m_hr->getLong("mininlinks",0);
+	int32_t minInlinks = m_hr.getLong("mininlinks",0);
 	if ( minInlinks > 0 ) {
 		//if ( p > pstart ) *p++ = ' ';
 		if ( m_sbuf1.length() ) m_sbuf1.pushChar(' ');
 		//char *str = "gbkeyword:numinlinks";
-		//long  len = gbstrlen(str);
-		//memcpy ( p , str , len );
+		//int32_t  len = gbstrlen(str);
+		//gbmemcpy ( p , str , len );
 		//p += len;
 		m_sbuf1.safePrintf ( "gbkeyword:numinlinks");
 	}
 
 	// null terms
-	m_sbuf1.pushChar('\0');
-	m_sbuf2.pushChar('\0');
-	m_sbuf3.pushChar('\0');
+	if ( ! m_sbuf1.nullTerm() ) return false;
+	if ( ! m_sbuf2.nullTerm() ) return false;
+	if ( ! m_sbuf3.nullTerm() ) return false;
 
 	// the natural query
 	m_displayQuery = m_sbuf2.getBufStart();// + displayQueryOffset;
@@ -1184,31 +1076,69 @@ bool SearchInput::setQueryBuffers ( ) {
 
 	while ( *m_displayQuery == ' ' ) m_displayQuery++;
 
-	m_displayQueryLen = gbstrlen(m_displayQuery);//p-m_displayQuery
+	//m_displayQueryLen = gbstrlen(m_displayQuery);//p-m_displayQuery
 
 
 	//log("query: got query %s",m_sbuf1.getBufStart());
 	//log("query: got display query %s",m_displayQuery);
 
 	// urlencoded display query
-	urlEncode(m_qe,
-		  MAX_QUERY_LEN*2,
-		  m_displayQuery,
-		  m_displayQueryLen);
+	m_qe.urlEncode ( m_displayQuery );
+
+	// urlEncode(m_qe,
+	// 	  MAX_QUERY_LEN*2,
+	// 	  m_displayQuery,
+	// 	  gbstrlen(m_displayQuery));
 	
+
+
+
+	//////////
+	//
+	// show DMOZ BREADCRUMB if doing a 
+	// "gbpcatid:<catid> |" (Search restricted to category)
+	// "gbcatid:<catid>"    (DMOZ urls in that topic, c=dmoz3)
+	//
+	//////////
+	int32_t pcatId = -1;
+	int32_t dcatId  = -1;
+	// get the final query
+	char *q =m_sbuf1.getBufStart();
+
+	if ( q ) sscanf(q,"gbpcatid:%"INT32"",&pcatId);
+	if ( q ) sscanf(q,"gbcatid:%"INT32"",&dcatId);
+	// pick the one that is valid
+	int32_t catId = -1;
+	if ( pcatId >= 0 ) catId = pcatId;
+	if ( dcatId >= 0 ) catId = dcatId;
+	
+	//////
+	//
+	// save catid into the state
+	m_catId = catId;
+	//
+	///////
+
+	// are we a right to left language like hebrew?
+	if ( catId > 0 && g_categories->isIdRTL(catId) )
+		m_isRTL = true;
+	else
+		m_isRTL = false;
+
 	return true;
 }
 
+/*
 uint8_t SearchInput::detectQueryLanguage(void) {
 	uint8_t lang = 0;
 	// Check to see if default language is set.
 	// This should override everything else.
-	if(m_defaultSortLanguage)
-			lang = getLanguageFromAbbr(m_defaultSortLanguage);
+	//if(m_defaultSortLanguage)
+	//		lang = getLanguageFromAbbr(m_defaultSortLanguage);
 
 	// Set query language from User Agent string, if possible
-	if(!lang && m_hr->getUserAgent())
-		lang = g_langId.guessLanguageFromUserAgent(m_hr->getUserAgent());
+	if(!lang && m_hr.getUserAgent())
+		lang= g_langId.guessLanguageFromUserAgent(m_hr.getUserAgent());
 
 	// guess from query terms
 	if(!lang && m_q)
@@ -1232,9 +1162,14 @@ uint8_t SearchInput::detectQueryLanguage(void) {
 		// Many doofuses just download firefox and don't set it
 		// up properly, so this takes second place to the IP search.
 		if(!m_country)
-			m_country = g_langId.guessCountryFromUserAgent(m_hr->getUserAgent());
+			m_country = g_langId.guessCountryFromUserAgent(m_hr.getUserAgent());
 
 	}
 
 	return(lang);
 }
+*/
+
+//char getFormatFromRequest ( HttpRequest *r ) {
+//
+//}

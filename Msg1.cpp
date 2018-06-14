@@ -12,7 +12,7 @@
 #include "Repair.h"
 
 static void gotReplyWrapper1 ( void    *state , void *state2 ) ;
-static void handleRequest1   ( UdpSlot *slot  , long niceness ) ;
+static void handleRequest1   ( UdpSlot *slot  , int32_t niceness ) ;
 
 // . all these parameters should be preset
 bool Msg1::registerHandler ( ) {
@@ -30,8 +30,8 @@ bool Msg1::registerHandler ( ) {
 //        added. so let's decrease from 800 to 20.
 #define MAX_MSG1S 100
 static Msg1  s_msg1 [ MAX_MSG1S ];
-static long  s_next [ MAX_MSG1S ];
-static long  s_head = 0 ;
+static int32_t  s_next [ MAX_MSG1S ];
+static int32_t  s_head = 0 ;
 static bool  s_init = false;
 static Msg1 *getMsg1    ( ) ;
 static void  returnMsg1 ( void *state );
@@ -40,10 +40,10 @@ static void  init       ( );
 Msg1 *getMsg1 ( ) {
 	if ( ! s_init ) { init(); s_init = true; }
 	if ( s_head == -1 ) return NULL;
-	long i = s_head;
+	int32_t i = s_head;
 	s_head = s_next [ s_head ];
 	// debug msg
-	//log("got mcast=%li",(long)(&s_msg1[i].m_mcast));
+	//log("got mcast=%"INT32"",(int32_t)(&s_msg1[i].m_mcast));
 	return &s_msg1[i];
 }
 void returnMsg1 ( void *state ) {
@@ -51,8 +51,8 @@ void returnMsg1 ( void *state ) {
 	// free this if we have to
 	msg1->m_ourList.freeList();
 	// debug msg
-	//log("return mcast=%li",(long)(&msg1->m_mcast));
-	long i = msg1 - s_msg1;
+	//log("return mcast=%"INT32"",(int32_t)(&msg1->m_mcast));
+	int32_t i = msg1 - s_msg1;
 	if ( i < 0 || i > MAX_MSG1S ) {
 		log(LOG_LOGIC,"net: msg1: Major problem adding data."); 
 		char *xx = NULL; *xx = 0; }
@@ -61,13 +61,45 @@ void returnMsg1 ( void *state ) {
 }
 void init ( ) {
 	// init the linked list
-	for ( long i = 0 ; i < MAX_MSG1S ; i++ ) {
+	for ( int32_t i = 0 ; i < MAX_MSG1S ; i++ ) {
 		if ( i == MAX_MSG1S - 1 ) s_next[i] = -1;
 		else                      s_next[i] = i + 1;
 		// these guys' constructor is not called, so do it?
 		//s_msg1[i].m_ourList.m_alloc = NULL;
 	}
 	s_head = 0;
+}
+
+bool Msg1::addRecord ( char *rec , 
+		       int32_t recSize , 
+		       char          rdbId             ,
+		       collnum_t collnum ,
+		       void         *state             ,
+		       void (* callback)(void *state)  ,
+		       int32_t          niceness          ) {
+
+	key_t sk;
+	key_t ek;
+	sk.setMin();
+	ek.setMax();
+	//RdbList list;
+	m_tmpList.set ( rec , 
+		   recSize ,
+		   rec ,
+		   recSize ,
+		   (char *)&sk,
+		   (char *)&ek,
+		   -1 , // fixed data size
+		   false , // owndata?
+		   false , // use half keys?
+		   sizeof(key_t));
+	return addList ( &m_tmpList ,
+			 rdbId ,
+			 collnum,//g_collectiondb.m_recs[collnum]->m_coll ,
+			 state ,
+			 callback ,
+			 false , // force local?
+			 niceness );
 }
 
 // . send an add command to all machines in the appropriate group
@@ -79,16 +111,16 @@ void init ( ) {
 //   when the reply does come back we do NOT call the callback
 bool Msg1::addList ( RdbList      *list              ,
 		     char          rdbId             ,
-		     char         *coll              ,
+		     collnum_t collnum, // char         *coll              ,
 		     void         *state             ,
 		     void (* callback)(void *state)  ,
 		     bool          forceLocal        ,
-		     long          niceness          ,
+		     int32_t          niceness          ,
 		     bool          injecting         ,
 		     bool          waitForReply      ,
 		     bool         *inTransit         ) {
 	// warning
-	if ( ! coll ) log(LOG_LOGIC,"net: NULL collection. msg1.cpp.");
+	if ( collnum<0 ) log(LOG_LOGIC,"net: bad collection. msg1.cpp.");
 	// if list has no records in it return true
 	if ( ! list || list->isEmpty() ) return true;
 	// sanity check
@@ -111,13 +143,13 @@ bool Msg1::addList ( RdbList      *list              ,
 			goto skip; 
 		}
 		// steal the list, we don't want caller to free it
-		memcpy ( &Y->m_ourList , list , sizeof(RdbList) );
+		gbmemcpy ( &Y->m_ourList , list , sizeof(RdbList) );
 		
  		QUICKPOLL(niceness);
 		
 		// if list is small enough use our buf
 		if ( ! list->m_ownData && list->m_listSize <= MSG1_BUF_SIZE ) {
-			memcpy ( Y->m_buf , list->m_list , list->m_listSize );
+			gbmemcpy ( Y->m_buf , list->m_list , list->m_listSize );
 			Y->m_ourList.m_list    = Y->m_buf;
 			Y->m_ourList.m_listEnd = Y->m_buf + list->m_listSize;
 			Y->m_ourList.m_alloc   = NULL;
@@ -143,7 +175,7 @@ bool Msg1::addList ( RdbList      *list              ,
 		bool inTransit;
 		bool status = Y->addList ( &Y->m_ourList ,
 					   rdbId         ,
-					   coll          ,
+					   collnum       ,
 					   Y             , // state
 					   returnMsg1    , // callback
 					   forceLocal    ,
@@ -157,7 +189,7 @@ bool Msg1::addList ( RdbList      *list              ,
 		// is false, but the request may still be in transit
 		if ( inTransit ) return true;
 		// debug msg
-		//log("did not block, listSize=%li",m->m_ourList.m_listSize);
+		//log("did not block, listSize=%"INT32"",m->m_ourList.m_listSize);
 		// we did it without blocking, but it is still in transit
 		// unless there was an error
 		if ( g_errno ) log("net: Adding data to %s had error: %s.",
@@ -173,7 +205,7 @@ bool Msg1::addList ( RdbList      *list              ,
 	// remember these vars
 	m_list          = list;
 	m_rdbId         = rdbId;
-	m_coll          = coll;
+	m_collnum       = collnum;
 	m_state         = state;
 	m_callback      = callback;
 	m_forceLocal    = forceLocal;
@@ -209,8 +241,8 @@ bool Msg1::sendSomeOfList ( ) {
 	     m_list->m_ks != 24 ) { 
 		char *xx=NULL;*xx=0; }
 	// debug msg
-	//log("sendSomeOfList: mcast=%lu exhausted=%li",
-	//    (long)&m_mcast,(long)m_list->isExhausted());
+	//log("sendSomeOfList: mcast=%"UINT32" exhausted=%"INT32"",
+	//    (int32_t)&m_mcast,(int32_t)m_list->isExhausted());
  loop:
 	// return true if list exhausted and nothing left to add
 	if ( m_list->isExhausted() ) return true;
@@ -220,12 +252,12 @@ bool Msg1::sendSomeOfList ( ) {
 	m_list->getCurrentKey(firstKey);
  	QUICKPOLL(m_niceness);
 	// get groupId from this key
-	//unsigned long groupId ; 
+	//uint32_t groupId ; 
 	// . use the new Hostdb.h inlined function
-	uint32_t groupId = getGroupId ( m_rdbId , firstKey );
+	uint32_t shardNum = getShardNum ( m_rdbId , firstKey );
 	// . default is to use top bits of the key
 	// . but if we're adding to titledb use last bits in the top of key
-	// . but if we're adding to spiderdb we use the last long in the key
+	// . but if we're adding to spiderdb we use the last int32_t in the key
 	// . tfndb urlRec key same as titleRec key
 	/*
 	if      ( m_rdbId == RDB_INDEXDB )
@@ -268,7 +300,7 @@ bool Msg1::sendSomeOfList ( ) {
 	while ( ! m_list->isExhausted() ) {
 		//key = m_list->getCurrentKey();
 		m_list->getCurrentKey(key);
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 		// no half bits in here!
 		// debug point
 		if ( m_list->useHalfKeys() && 
@@ -281,7 +313,8 @@ bool Msg1::sendSomeOfList ( ) {
 		// . but uses the top 32 bits of key still
 		// . spiderdb uses last 64 bits to determine groupId
 		// . tfndb now is like titledb(top 32 bits are top 32 of docId)
-		if ( getGroupId(m_rdbId,key) != groupId ) goto done;
+		//if ( getGroupId(m_rdbId,key) != groupId ) goto done;
+		if ( getShardNum(m_rdbId,key) != shardNum ) goto done;
 		/*
 		switch ( m_rdbId ) {
 		case RDB_TITLEDB: 
@@ -325,7 +358,7 @@ bool Msg1::sendSomeOfList ( ) {
 		// . point to next record
 		// . will point passed records if no more left!
  		QUICKPOLL(m_niceness);
-		//long crec = m_list->getCurrentRecSize();
+		//int32_t crec = m_list->getCurrentRecSize();
 		m_list->skipCurrentRecord();
 		// sanity check
 		if ( m_list->m_listPtr > m_list->m_listEnd ) {
@@ -339,14 +372,14 @@ bool Msg1::sendSomeOfList ( ) {
 	//   just enough to put it into a different groupId (but not out
 	//   of order) so we couldn't delete it cuz our delete keys would go
 	//   elsewhere
-	if ( m_forceLocal && groupId != g_hostdb.m_groupId &&
+	if ( m_forceLocal && shardNum != getMyShardNum() &&
 	     ! g_conf.m_interfaceMachine ) {
 		// make the groupId local, our group
-		groupId = g_hostdb.m_groupId;
+		//groupId = g_hostdb.m_groupId;
 		// bitch about this to log it
-		log("net: Data does not belong in group id 0x%lx, but adding "
+		log("net: Data does not belong in shard %"UINT32", but adding "
 		    "to %s anyway. Probable data corruption.",
-		    (long)groupId,getDbnameFromId(m_rdbId));
+		    (uint32_t)shardNum,getDbnameFromId(m_rdbId));
 	}
 	
  	QUICKPOLL(m_niceness);
@@ -355,11 +388,17 @@ bool Msg1::sendSomeOfList ( ) {
 	if ( m_list->m_fixedDataSize != getDataSizeFromRdbId(m_rdbId) ) {
 		char *xx=NULL;*xx=0; }
 
+	// little debug thing for genCatdb from msg9b's huge list add
+	//if ( m_list->m_listSize > 10000000 )
+	//	log("msg1: adding chunk @ %"INT32" of %"INT32" bytes",
+	//	    (int32_t)(dataStart - m_list->m_list) ,
+	//	    (int32_t)m_list->m_listSize );
+
 	// . now send this list to the host
 	// . this returns false if blocked, true otherwise
 	// . it also sets g_errno on error
 	// . if it blocked return false
-	if ( ! sendData ( groupId , dataStart , dataEnd - dataStart ) )
+	if ( ! sendData ( shardNum , dataStart , dataEnd - dataStart ) )
 		return false;
 	// if there was an error return true
 	if ( g_errno ) return true;
@@ -369,17 +408,17 @@ bool Msg1::sendSomeOfList ( ) {
 
 // . return false if blocked, true otherwise
 // . sets g_errno on error
-bool Msg1::sendData ( unsigned long groupId, char *listData , long listSize ) {
+bool Msg1::sendData ( uint32_t shardNum, char *listData , int32_t listSize) {
 	// debug msg
-	//log("sendData: mcast=%lu listSize=%li",
-	//    (long)&m_mcast,(long)listSize);
+	//log("sendData: mcast=%"UINT32" listSize=%"INT32"",
+	//    (int32_t)&m_mcast,(int32_t)listSize);
 
 	// bail if this is an interface machine, don't write to the main
 	if ( g_conf.m_interfaceMachine ) return true;
 	// return true if no data
 	if ( listSize == 0 ) return true;
 	// how many hosts in this group
-	//long numHosts = g_hostdb.getNumHostsPerGroup();
+	//int32_t numHosts = g_hostdb.getNumHostsPerShard();
 	// . NOTE: for now i'm removing this until I handle ETRYAGAIN errors
 	//         properly... by waiting and retrying...
 	// . if this is local data just for us just do an addList to OUR rdb
@@ -412,14 +451,19 @@ bool Msg1::sendData ( unsigned long groupId, char *listData , long listSize ) {
 	*/
 	// if the data is being added to our group, don't send ourselves
 	// a msg1, if we can add it right now
+	// MDW: crap this is getting ETRYAGAIN and it isn't being tried again
+	// i guess and Spider.cpp fails to add to doledb but the doleiptable
+	// maintains a positive count, thereby hanging the spiders. let's
+	// just always go through multicast so it will auto-retry ETRYAGAIN
+	/*
 	bool sendToSelf = true;
-	if ( groupId == g_hostdb.m_groupId &&
+	if ( shardNum == getMyShardNum() &&
 	     ! g_conf.m_interfaceMachine ) {
 		// get the rdb to which it belongs, use Msg0::getRdb()
 		Rdb *rdb = getRdbFromId ( (char) m_rdbId );
 		if ( ! rdb ) goto skip;
 		// key size
-		long ks = getKeySizeFromRdbId ( m_rdbId );
+		int32_t ks = getKeySizeFromRdbId ( m_rdbId );
 		// reset g_errno
 		g_errno = 0;
 		// . make a list from this data
@@ -436,7 +480,7 @@ bool Msg1::sendData ( unsigned long groupId, char *listData , long listSize ) {
 			   rdb->useHalfKeys()      ,
 			   ks                      ); 
 		// note that
-		//log("msg1: local addlist niceness=%li",m_niceness);
+		//log("msg1: local addlist niceness=%"INT32"",m_niceness);
 		// this returns false and sets g_errno on error
 		rdb->addList ( m_coll , &list , m_niceness );
 		// if titledb, add tfndb recs to map the title recs
@@ -446,26 +490,30 @@ bool Msg1::sendData ( unsigned long groupId, char *listData , long listSize ) {
 		// if no error, no need to use a Msg1 UdpSlot for ourselves
 		if ( ! g_errno ) sendToSelf = false;
 		else {
-			log("rdb: msg1 had error: %s",mstrerror(g_errno));
-			return true;
+			log("rdb: msg1 coll=%s rdb=%s had error: %s",
+			    m_coll,rdb->m_dbname,mstrerror(g_errno));
+			// this is messing up generate catdb's huge rdblist add
+			// why did we put it in there??? from msg9b.cpp
+			//return true;
 		}
 		
  		QUICKPOLL(m_niceness);
 		// if we're the only one in the group, bail, we're done
 		if ( ! sendToSelf &&
-		     g_hostdb.getNumHostsPerGroup() == 1 ) return true;
+		     g_hostdb.getNumHostsPerShard() == 1 ) return true;
 	}
 skip:
+	*/
 	// . make an add record request to multicast to a bunch of machines
 	// . this will alloc new space, returns NULL on failure
 	//char *request = makeRequest ( listData, listSize, groupId , 
 	//m_rdbId , &requestLen );
-	long collLen = gbstrlen ( m_coll );
+	//int32_t collLen = gbstrlen ( m_coll );
 	// . returns NULL and sets g_errno on error
 	// . calculate total size of the record
 	// . 1 byte for rdbId, 1 byte for flags,
 	//   then collection NULL terminated, then list
-	long requestLen = 1 + 1 + collLen + 1 + listSize ;
+	int32_t requestLen = 1 + 1 + sizeof(collnum_t) + listSize ;
 	// make the request
 	char *request = (char *) mmalloc ( requestLen ,"Msg1" );
 	if ( ! request ) return true;
@@ -477,33 +525,35 @@ skip:
 	if ( m_injecting ) *p |= 0x80;
 	p++;
 	// then collection name
-	memcpy ( p , m_coll , collLen );
-	p += collLen;
-	*p++ = '\0';
+	//gbmemcpy ( p , m_coll , collLen );
+	//p += collLen;
+	//*p++ = '\0';
+	*(collnum_t *)p = m_collnum;
+	p += sizeof(collnum_t);
 	// sanity check
-	if ( collLen <= 0 ) {
-		log(LOG_LOGIC,"net: No collection specified for list add.");
-		//char *xx = NULL; *xx = 0;
-		g_errno = ENOCOLLREC;
-		return true;
-	}
+	//if ( collLen <= 0 ) {
+	//	log(LOG_LOGIC,"net: No collection specified for list add.");
+	//	//char *xx = NULL; *xx = 0;
+	//	g_errno = ENOCOLLREC;
+	//	return true;
+	//}
 	//if ( m_deleteRecs    ) request[1] |= 0x80;
 	//if ( m_overwriteRecs ) request[1] |= 0x40;
 	// store the list after coll
-	memcpy ( p , listData , listSize );
+	gbmemcpy ( p , listData , listSize );
  	QUICKPOLL(m_niceness);
 	// debug msg
 	//if ( ! m_waitForReply ) // (m_rdbId == RDB_SPIDERDB || 
 	//m_rdbId == RDB_TFNDB)  )
 	//	// if we don't get here we lose it!!!!!!!!!!!!!!!!!!!!!
-	//	log("using mcast=%lu rdbId=%li listData=%lu listSize=%lu "
-	//	    "gid=%lu",
-	//	   (long)&m_mcast,(long)m_rdbId,(long)listData,(long)listSize,
+	//	log("using mcast=%"UINT32" rdbId=%"INT32" listData=%"UINT32" listSize=%"UINT32" "
+	//	    "gid=%"UINT32"",
+	//	   (int32_t)&m_mcast,(int32_t)m_rdbId,(int32_t)listData,(int32_t)listSize,
 	//	    groupId);
 	// for small packets
-	//long niceness = 2;
+	//int32_t niceness = 2;
 	//if ( requestLen < TMPBUFSIZE - 32 ) niceness = 0;
-	//log("msg1: sending mcast niceness=%li",m_niceness);
+	//log("msg1: sending mcast niceness=%"INT32"",m_niceness);
 	// . multicast to all hosts in group "groupId"
 	// . multicast::send() returns false and sets g_errno on error
 	// . we return false if we block, true otherwise
@@ -513,7 +563,7 @@ skip:
 			    requestLen , // sets mcast->m_msgLen to this
 			    0x01       , // msgType for add rdb record
 			    true       , // does multicast own msg?
-			    groupId    , // group to send to (groupKey)
+			    shardNum   , // group to send to (groupKey)
 			    true       , // send to whole group?
 			    0          , // key is useless for us
 			    this       , // state data
@@ -532,13 +582,13 @@ skip:
 			    k    , // cache key
 			    RDB_NONE , // bogus rdbId
 			    -1    , // unknown minRecSizes read size
-			    sendToSelf ))
+			    true )) // sendToSelf ))
 		return false;
 
  	QUICKPOLL(m_niceness);
 	// g_errno should be set
-	log("net: Had error when sending request to add data to %s in group "
-	    "#%li: %s.", getDbnameFromId(m_rdbId),groupId,mstrerror(g_errno));
+	log("net: Had error when sending request to add data to %s in shard "
+	    "#%"UINT32": %s.", getDbnameFromId(m_rdbId),shardNum,mstrerror(g_errno));
 	return true;	
 }
 
@@ -552,7 +602,7 @@ void gotReplyWrapper1 ( void *state , void *state2 ) {
 		    "to %s: %s",getDbnameFromId(THIS->m_rdbId),
 		    mstrerror(g_errno));
 
-	//long address = (long)THIS->m_callback;
+	//int32_t address = (int32_t)THIS->m_callback;
 
 	// if our list to send is exhausted then we're done!
 	if ( THIS->m_list->isExhausted() ) {
@@ -563,8 +613,8 @@ void gotReplyWrapper1 ( void *state , void *state2 ) {
 		if ( THIS->m_callback ) THIS->m_callback ( THIS->m_state ); 
 		//if(g_conf.m_profilingEnabled){
 		//	if(!g_profiler.endTimer(address, __PRETTY_FUNCTION__))
-		//		log(LOG_WARN,"admin: Couldn't add the fn %li",
-		//		    (long)address);
+		//		log(LOG_WARN,"admin: Couldn't add the fn %"INT32"",
+		//		    (int32_t)address);
 		//}
 
 		return; 
@@ -577,8 +627,8 @@ void gotReplyWrapper1 ( void *state , void *state2 ) {
 		if ( THIS->m_callback ) THIS->m_callback ( THIS->m_state ); 
 		//if(g_conf.m_profilingEnabled){
 		//	if(!g_profiler.endTimer(address, __PRETTY_FUNCTION__))
-		//		log(LOG_WARN,"admin: Couldn't add the fn %li",
-		//		    (long)address);
+		//		log(LOG_WARN,"admin: Couldn't add the fn %"INT32"",
+		//		    (int32_t)address);
 		//}
 		return; 
 	}
@@ -601,13 +651,13 @@ static void addedList   ( UdpSlot *slot , Rdb *rdb );
 // . TODO: need we send a reply back on success????
 // . NOTE: Must always call g_udpServer::sendReply or sendErrorReply() so
 //   read/send bufs can be freed
-void handleRequest1 ( UdpSlot *slot , long netnice ) {
+void handleRequest1 ( UdpSlot *slot , int32_t netnice ) {
 
 
 	// extract what we read
 	char *readBuf     = slot->m_readBuf;
-	long  readBufSize = slot->m_readBufSize;
-	long niceness = slot->m_niceness;
+	int32_t  readBufSize = slot->m_readBufSize;
+	int32_t niceness = slot->m_niceness;
 
 	// select udp server based on niceness
 	UdpServer *us = &g_udpServer;
@@ -634,8 +684,10 @@ void handleRequest1 ( UdpSlot *slot , long netnice ) {
 	else             injecting = false;
 	p++;
 	// then collection
-	char *coll = p;
-	p += gbstrlen (p) + 1;
+	//char *coll = p;
+	//p += gbstrlen (p) + 1;
+	collnum_t collnum = *(collnum_t *)p;
+	p += sizeof(collnum_t);
 	// . make a list from this data
 	// . skip over the first 4 bytes which is the rdbId
 	// . TODO: embed the rdbId in the msgtype or something...
@@ -650,10 +702,10 @@ void handleRequest1 ( UdpSlot *slot , long netnice ) {
 		   rdb->useHalfKeys()      ,
 		   rdb->getKeySize ()      ); 
 	// note it
-	//log("msg1: handlerequest1 calling addlist niceness=%li",niceness);
-	//log("msg1: handleRequest1 niceness=%li",niceness);
+	//log("msg1: handlerequest1 calling addlist niceness=%"INT32"",niceness);
+	//log("msg1: handleRequest1 niceness=%"INT32"",niceness);
 	// this returns false and sets g_errno on error
-	rdb->addList ( coll , &list , niceness);
+	rdb->addList ( collnum , &list , niceness);
 	// if titledb, add tfndb recs to map the title recs
 	//if ( ! g_errno && rdb == g_titledb.getRdb() && injecting ) 
 	//	updateTfndb ( coll , &list , true, 0);
@@ -672,7 +724,7 @@ void handleRequest1 ( UdpSlot *slot , long netnice ) {
 // . OBSOLETE: now handled in Rdb.cpp::addRecord()
 /*
 bool updateTfndb ( char *coll , RdbList *list , bool isTitledb, 
-		   long niceness ) {
+		   int32_t niceness ) {
 	// if this is titledb then add to tfndb first so it doesn't
 	// get dumped after we add it
 	list->resetListPtr();
@@ -694,8 +746,8 @@ bool updateTfndb ( char *coll , RdbList *list , bool isTitledb,
 	// make the tfndb record
 	key_t ukey;
 	if ( isTitledb ) {
-		long long d = g_titledb.getDocIdFromKey ( (key_t *)k );
-		long e = g_titledb.getHostHash ( (key_t *)k );
+		int64_t d = g_titledb.getDocIdFromKey ( (key_t *)k );
+		int32_t e = g_titledb.getHostHash ( (key_t *)k );
 		ukey = g_tfndb.makeKey ( d, e, 255, false, false );//255=tfn
 		//g_tfndb.makeKey ( d, e, 255, false, false , ukey );
 	}
@@ -703,7 +755,7 @@ bool updateTfndb ( char *coll , RdbList *list , bool isTitledb,
 	else {
 		key_t k        = list->getCurrentKey() ;
 		char *data     = list->getCurrentData();
-		long  dataSize = list->getCurrentDataSize();
+		int32_t  dataSize = list->getCurrentDataSize();
 		// is it a delete?
 		if ( dataSize == 0 ) {
 			// if not a delete, that's weird...
@@ -716,8 +768,8 @@ bool updateTfndb ( char *coll , RdbList *list , bool isTitledb,
 		// otherwise we should have a good data size
 		SpiderRec sr;
 		sr.set ( k , data , dataSize );
-		long long d = sr.getDocId();
-		long e = g_tfndb.makeExt ( sr.getUrl() );
+		int64_t d = sr.getDocId();
+		int32_t e = g_tfndb.makeExt ( sr.getUrl() );
 		ukey = g_tfndb.makeKey ( d, e, 255, false, false );//255=tfn
 		//g_tfndb.makeKey ( d, e, 255, false, false , ukey );
 	}
@@ -733,7 +785,7 @@ bool updateTfndb ( char *coll , RdbList *list , bool isTitledb,
 	// . why return true on error? always should be false
 	if ( g_errno != ETRYAGAIN && g_errno != ENOMEM ) return false;
 	// save it
-	long saved = g_errno;
+	int32_t saved = g_errno;
 	// try starting a dump, Rdb::addRecord() does not do this like it
 	// should, only Rdb::addList() does
 	if ( udb->needsDump() ) {
@@ -764,6 +816,17 @@ void addedList ( UdpSlot *slot , Rdb *rdb ) {
 	     g_repairMode > 0 )
 	     //g_repair.m_fullRebuild )
 		g_errno = ETRYAGAIN;
+
+	// it seems like someone can delete a collection and there can
+	// be adds in transit to doledb and it logs
+	// "doledb bad collnum of 30110"
+	// so just absorb those
+	if ( g_errno == ENOCOLLREC ) {
+		log("msg1: missing collrec to add to to %s. just dropping.",
+		    rdb->m_dbname);
+		g_errno = 0;
+	}
+
 	// . if we got a ETRYAGAIN cuz the buffer we add to was full
 	//   then we should sleep and try again!
 	// . return false cuz this blocks for a period of time
@@ -780,7 +843,7 @@ void addedList ( UdpSlot *slot , Rdb *rdb ) {
 	//}
 	// random test
 	//if ( (rand() % 10) == 1 ) g_errno = ETRYAGAIN;
-	//long niceness = slot->getNiceness() ;
+	//int32_t niceness = slot->getNiceness() ;
 	// select udp server based on niceness
 	UdpServer *us = &g_udpServer ;
 	//if ( niceness == 0 ) us = &g_udpServer2;
@@ -814,7 +877,7 @@ void tryAgainWrapper ( int fd , void *state ) {
 //if split is true, it can still be overrriden by the parm in g_conf
 //if false, we don't split index and date lists, other dbs are unaffected
 /*
-unsigned long getGroupId ( char rdbId , char *key, bool split ) {
+uint32_t getGroupId ( char rdbId , char *key, bool split ) {
 
 	if ( split ) {
 	// try to put those most popular ones first for speed

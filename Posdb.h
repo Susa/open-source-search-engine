@@ -5,7 +5,7 @@
 //   tttttttt tttttttt dddddddd dddddddd  d = docId (38 bits)
 //   dddddddd dddddddd dddddd0r rrrggggg  r = siterank, g = langid
 //   wwwwwwww wwwwwwww wwGGGGss ssvvvvFF  w = word postion , s = wordspamrank
-//   pppppb1M MMMMLZZD                    v = diversityrank, p = densityrank
+//   pppppb1N MMMMLZZD                    v = diversityrank, p = densityrank
 //                                        M = multiplier, b = in outlink text
 //                                        L = langIdShiftBit (upper bit)
 //   G: 0 = body 
@@ -24,11 +24,16 @@
 //      2 = synonym
 //      3 = hyponym
 
+//   NOTE: N bit is 1 if the shard of the record is determined by the
+//   termid (t bits) and NOT the docid (d bits). N stands for "nosplit"
+//   and you can find that logic in XmlDoc.cpp and Msg4.cpp. We store 
+//   the hash of the content like this so we can see if it is a dup.
+
 //   NOTE: M bits hold scaling factor (logarithmic) for link text voting
 //   so we do not need to repeat the same link text over and over again.
 //   Use M bits to hold # of inlinks the page has for other terms.
 
-//   NOTE: for inlinktext terms the pattern rank is the siterank of the
+//   NOTE: for inlinktext terms the spam rank is the siterank of the
 //   inlinker!
 
 //   NOTE: densityrank for title is based on # of title words only. same goes
@@ -61,7 +66,7 @@
 #define MAXWORDSPAMRANK  0x0f // 4 bits
 #define MAXDIVERSITYRANK 0x0f // 4 bits
 #define MAXHASHGROUP     0x0f // 4 bits
-#define MAXMULTIPLIER    0x1f // 5 bits
+#define MAXMULTIPLIER    0x0f // 4 bits
 #define MAXISSYNONYM     0x03 // 2 bits
 
 // values for G bits in the posdb key
@@ -84,13 +89,13 @@ float getWordSpamWeight  ( unsigned char wordSpamRank );
 float getLinkerWeight    ( unsigned char wordSpamRank );
 char *getHashGroupString ( unsigned char hg );
 float getHashGroupWeight ( unsigned char hg );
-float getTermFreqWeight  ( long long termFreq , long long numDocsInColl );
+float getTermFreqWeight  ( int64_t termFreq , int64_t numDocsInColl );
 
 #define SYNONYM_WEIGHT 0.90
 #define WIKI_WEIGHT    0.10 // was 0.20
 #define SITERANKDIVISOR 3.0
 #define SITERANKMULTIPLIER 0.33333333
-#define SAMELANGMULT    20.0 // FOREIGNLANGDIVISOR  2.0
+//#define SAMELANGMULT    20.0 // FOREIGNLANGDIVISOR  2.0
 
 #define POSDBKEY key144_t
 
@@ -99,8 +104,10 @@ float getTermFreqWeight  ( long long termFreq , long long numDocsInColl );
 #define BF_SYNONYM            0x04
 #define BF_NEGATIVE           0x08  // query word has a negative sign before it
 #define BF_BIGRAM             0x10  // query word has a negative sign before it
+#define BF_NUMBER             0x20  // is it like gbsortby:price? numeric?
+#define BF_FACET              0x40  // gbfacet:price
 
-void printTermList ( long i, char *list, long listSize ) ;
+void printTermList ( int32_t i, char *list, int32_t listSize ) ;
 
 // if query is 'the tigers' we weight bigram "the tigers" x 1.20 because
 // its in wikipedia.
@@ -118,7 +125,7 @@ class Posdb {
 	bool init ( );
 
 	// init the rebuild/secondary rdb, used by PageRepair.cpp
-	bool init2 ( long treeMem );
+	bool init2 ( int32_t treeMem );
 
 	bool verify ( char *coll );
 
@@ -128,7 +135,7 @@ class Posdb {
 	// . store all posdb keys from revdbList into one hashtable
 	//   and only add to new list if not in there
 	//bool makeList ( class RdbList *revdbList ,
-	//		long long docId ,
+	//		int64_t docId ,
 	//		class Words *words );
 			
 
@@ -136,9 +143,9 @@ class Posdb {
 	// . make a 16-byte key from all these components
 	// . since it is 16 bytes, the big bit will be set
 	void makeKey ( void              *kp             ,
-		       long long          termId         ,
-		       unsigned long long docId          , 
-		       long               wordPos        ,
+		       int64_t          termId         ,
+		       uint64_t docId          , 
+		       int32_t               wordPos        ,
 		       char               densityRank    ,
 		       char               diversityRank  ,
 		       char               wordSpamRank   ,
@@ -146,13 +153,14 @@ class Posdb {
 		       char               hashGroup      ,
 		       char               langId         ,
 		       // multiplier: we convert into 7 bits in this function
-		       long               multiplier     ,
+		       int32_t               multiplier     ,
 		       bool               isSynonym      ,
-		       bool               isDelKey       );
+		       bool               isDelKey       ,
+		       bool               shardByTermId  );
 
 	// make just the 6 byte key
 	void makeKey48 ( char              *kp             ,
-			 long               wordPos        ,
+			 int32_t               wordPos        ,
 			 char               densityRank    ,
 			 char               diversityRank  ,
 			 char               wordSpamRank   ,
@@ -162,16 +170,18 @@ class Posdb {
 			 bool               isDelKey       );
 
 
+	int printList ( RdbList &list ) ;
+
 	// we map the 32bit score to like 7 bits here
 	void setMultiplierBits ( void *vkp , unsigned char mbits ) {
 		key144_t *kp = (key144_t *)vkp;
 		if ( mbits > MAXMULTIPLIER ) { char *xx=NULL;*xx=0; }
 		kp->n0 &= 0xfc0f;
 		// map score to bits
-		kp->n0 |= ((unsigned short)mbits) << 4;
+		kp->n0 |= ((uint16_t)mbits) << 4;
 	}
 	
-	void setDocIdBits ( void *vkp , unsigned long long docId ) {
+	void setDocIdBits ( void *vkp , uint64_t docId ) {
 		key144_t *kp = (key144_t *)vkp;
 		kp->n1 &= 0x000003ffffffffffLL;
 		kp->n1 |= (docId<<(32+10));
@@ -183,7 +193,7 @@ class Posdb {
 		key144_t *kp = (key144_t *)vkp;
 		if ( siteRank > MAXSITERANK ) { char *xx=NULL;*xx=0; }
 		kp->n1 &= 0xfffffe1fffffffffLL;
-		kp->n1 |= ((unsigned long long)siteRank)<<(32+5);
+		kp->n1 |= ((uint64_t)siteRank)<<(32+5);
 	}
 	
 	void setLangIdBits ( void *vkp , char langId ) {
@@ -191,15 +201,38 @@ class Posdb {
 		if ( langId > MAXLANGID ) { char *xx=NULL;*xx=0; }
 		kp->n1 &= 0xffffffe0ffffffffLL;
 		// put the lower 5 bits here
-		kp->n1 |= ((unsigned long long)(langId&0x1f))<<(32);
-		// and the upper 6th bit here. n0 is a short.
+		kp->n1 |= ((uint64_t)(langId&0x1f))<<(32);
+		// and the upper 6th bit here. n0 is a int16_t.
 		// 0011 1111
 		if ( langId & 0x20 ) kp->n0 |= 0x08;
 	}
 
+	// set the word position bits et al to this float
+	void setFloat ( void *vkp , float f ) {
+		*(float *)(((char *)vkp) + 2) = f; };
 
-	void makeStartKey ( void *kp, long long termId , 
-			    long long docId=0LL){
+	void setInt ( void *vkp , int32_t x ) {
+		*(int32_t *)(((char *)vkp) + 2) = x; };
+
+	// and read the float as well
+	float getFloat ( void *vkp ) {
+		return *(float *)(((char *)vkp) + 2); };
+
+	int32_t getInt ( void *vkp ) {
+		return *(int32_t *)(((char *)vkp) + 2); };
+
+	void setAlignmentBit ( void *vkp , char val ) {
+		char *p = (char *)vkp;
+		if ( val ) p[1] = p[1] | 0x02;
+		else       p[1] = p[1] & 0xfd;
+	};
+
+	bool isAlignmentBitClear ( void *vkp ) {
+		return ( ( ((char *)vkp)[1] & 0x02 ) == 0x00 );
+	};
+
+	void makeStartKey ( void *kp, int64_t termId , 
+			    int64_t docId=0LL){
 		return makeKey ( kp,
 				 termId , 
 				 docId,
@@ -212,11 +245,12 @@ class Posdb {
 				 0, // langid
 				 0, // multiplier
 				 0, // issynonym/etc.
-				 true );  // isdelkey
+				 true ,  // isdelkey
+				 false ); // shardbytermid?
 	};
 
-	void makeEndKey  ( void *kp,long long termId, 
-			   long long docId = MAX_DOCID ) {
+	void makeEndKey  ( void *kp,int64_t termId, 
+			   int64_t docId = MAX_DOCID ) {
 		return makeKey ( kp,
 				 termId , 
 				 docId,
@@ -229,7 +263,8 @@ class Posdb {
 				 MAXLANGID,
 				 MAXMULTIPLIER,
 				 MAXISSYNONYM, // issynonym/etc.
-				 false); // isdelkey
+				 false, // isdelkey
+				 true);// shard by termid?
 	};
 
 	// we got two compression bits!
@@ -253,18 +288,18 @@ class Posdb {
 	}
 		
 
-	long long getTermId ( void *key ) {
+	int64_t getTermId ( void *key ) {
 		return ((key144_t *)key)->n2 >> 16;
 	};
 
-	long long getDocId ( void *key ) {
-		unsigned long long d = 0LL;
+	int64_t getDocId ( void *key ) {
+		uint64_t d = 0LL;
 		d = ((unsigned char *)key)[11];
 		d <<= 32;
-		d |= *(unsigned long *)(((unsigned char *)key)+7);
+		d |= *(uint32_t *)(((unsigned char *)key)+7);
 		d >>= 2;
 		return d;
-		//long long d = ((key144_t *)key)->n2 & 0xffff;
+		//int64_t d = ((key144_t *)key)->n2 & 0xffff;
 		//d <<= 22;
 		//d |= ((key144_t *)key)->n1 >> (32+8+2);
 		//return d;
@@ -286,12 +321,12 @@ class Posdb {
 		return ((((unsigned char *)key)[3]) >>2) & MAXHASHGROUP;
 	};
 
-	long getWordPos ( void *key ) {
+	int32_t getWordPos ( void *key ) {
 		//return (((key144_t *)key)->n1 >> 14) & MAXWORDPOS;
-		return (*((unsigned long *)((unsigned char *)key+2))) >> (8+6);
+		return (*((uint32_t *)((unsigned char *)key+2))) >> (8+6);
 	};
 
-	inline void setWordPos ( char *key , unsigned long wpos ) {
+	inline void setWordPos ( char *key , uint32_t wpos ) {
 		// truncate
 		wpos &= MAXWORDPOS;
 		if ( wpos & 0x01 ) key[3] |= 0x40;
@@ -305,7 +340,7 @@ class Posdb {
 
 	unsigned char getWordSpamRank ( void *key ) {
 		//return (((key144_t *)key)->n1 >> 6) & MAXWORDSPAMRANK;
-		return ((((unsigned short *)key)[1]) >>6) & MAXWORDSPAMRANK;
+		return ((((uint16_t *)key)[1]) >>6) & MAXWORDSPAMRANK;
 	};
 
 	unsigned char getDiversityRank ( void *key ) {
@@ -322,7 +357,7 @@ class Posdb {
 	};
 
 	unsigned char getDensityRank ( void *key ) {
-		return ((*(unsigned short *)key) >> 11) & MAXDENSITYRANK;
+		return ((*(uint16_t *)key) >> 11) & MAXDENSITYRANK;
 	};
 
 	inline void setDensityRank ( char *key , unsigned char dr ) {
@@ -334,27 +369,87 @@ class Posdb {
 		key[1] |= dr;
 	};
 
+	char isShardedByTermId ( void *key ){return ((char *)key)[1] & 0x01; };
+
+	void setShardedByTermIdBit ( void *key ) { 
+		char *k = (char *)key;
+		k[1] |= 0x01;
+	};
+
 	unsigned char getMultiplier ( void *key ) {
-		return ((*(unsigned short *)key) >> 4) & MAXMULTIPLIER; };
+		return ((*(uint16_t *)key) >> 4) & MAXMULTIPLIER; };
 
 	// . HACK: for sectionhash:xxxxx posdb keys
 	// . we use the w,G,s,v and F bits
-	unsigned long getSectionSiteHash32 ( void *key ) {
-		return *(unsigned long *)(((char *)key)+2); };
-	void setSectionSiteHash32 ( void *key , long siteHash32 ) {
-		*(unsigned long *)(((char *)key)+2) = siteHash32; };
+	uint32_t getFacetVal32 ( void *key ) {
+		return *(uint32_t *)(((char *)key)+2); };
+	void setFacetVal32 ( void *key , int32_t facetVal32 ) {
+		*(uint32_t *)(((char *)key)+2) = facetVal32; };
 
-	long long getTermFreq ( char *coll , long long termId ) ;
+	int64_t getTermFreq ( collnum_t collnum, int64_t termId ) ;
 
 	//RdbCache *getCache ( ) { return &m_rdb.m_cache; };
 	Rdb      *getRdb   ( ) { return &m_rdb; };
 
 	Rdb m_rdb;
 
-	DiskPageCache *getDiskPageCache ( ) { return &m_pc; };
+	//DiskPageCache *getDiskPageCache ( ) { return &m_pc; };
 
-	DiskPageCache m_pc;
+	//DiskPageCache m_pc;
 };
+
+class FacetEntry {
+ public:
+	// # of search results that have this value:
+	int32_t m_count;
+	// # of docs that have this value:
+	int32_t m_outsideSearchResultsCount;
+	int64_t m_docId;
+
+	// cast as double/floats for floats:
+	int64_t m_sum;
+	int32_t m_max;
+	int32_t m_min;
+};
+
+
+
+#define MAX_SUBLISTS 50
+
+// . each QueryTerm has this attached additional info now:
+// . these should be 1-1 with query terms, Query::m_qterms[]
+class QueryTermInfo {
+public:
+	class QueryTerm *m_qt;
+	// the required lists for this query term, synonym lists, etc.
+	RdbList  *m_subLists        [MAX_SUBLISTS];
+	// flags to indicate if bigram list should be scored higher
+	char      m_bigramFlags     [MAX_SUBLISTS];
+	// shrinkSubLists() set this:
+	int32_t      m_newSubListSize  [MAX_SUBLISTS];
+	char     *m_newSubListStart [MAX_SUBLISTS];
+	char     *m_newSubListEnd   [MAX_SUBLISTS];
+	char     *m_cursor          [MAX_SUBLISTS];
+	char     *m_savedCursor     [MAX_SUBLISTS];
+	// the corresponding QueryTerm for this sublist
+	//class QueryTerm *m_qtermList [MAX_SUBLISTS];
+	int32_t      m_numNewSubLists;
+	// how many are valid?
+	int32_t      m_numSubLists;
+	// size of all m_subLists in bytes
+	int64_t m_totalSubListsSize;
+	// the term freq weight for this term
+	float     m_termFreqWeight;
+	// what query term # do we correspond to in Query.h
+	int32_t      m_qtermNum;
+	// the word position of this query term in the Words.h class
+	int32_t      m_qpos;
+	// the wikipedia phrase id if we start one
+	int32_t      m_wikiPhraseId;
+	// phrase id term or bigram is in
+	int32_t      m_quotedStartId;
+};
+
 
 /*
 #include "RdbList.h"
@@ -364,7 +459,7 @@ class PosdbList : public RdbList {
  public:
 
 	// why do i have to repeat this for LinkInfo::set() calling our set()??
-	void set ( char *list , long  listSize  , bool  ownData   ) {
+	void set ( char *list , int32_t  listSize  , bool  ownData   ) {
 		RdbList::set ( list     ,
 			       listSize ,
 			       list     , // alloc
@@ -383,30 +478,30 @@ class PosdbList : public RdbList {
 
 	// . these are made for special IndexLists, too
 	// . getTermId() assumes as 12 byte key
-	long long getCurrentTermId12 ( ) {
+	int64_t getCurrentTermId12 ( ) {
 		return getTermId12 ( m_listPtr ); };
-	long long getTermId12 ( char *rec ) {
-		return (*(unsigned long long *)(&rec[4])) >> 16 ;
+	int64_t getTermId12 ( char *rec ) {
+		return (*(uint64_t *)(&rec[4])) >> 16 ;
 	};
-	long long getTermId16 ( char *rec ) {
-		return (*(unsigned long long *)(&rec[8])) >> 16 ;
+	int64_t getTermId16 ( char *rec ) {
+		return (*(uint64_t *)(&rec[8])) >> 16 ;
 	};
 	// these 2 assume 12 and 6 byte keys respectively
-	long long getCurrentDocId () {
+	int64_t getCurrentDocId () {
 		if ( isHalfBitOn ( m_listPtr ) ) return getDocId6 (m_listPtr);
 		else                             return getDocId12(m_listPtr);
 	};
-	long long getDocId ( char *rec ) {
+	int64_t getDocId ( char *rec ) {
 		if ( isHalfBitOn ( rec ) ) return getDocId6 (rec);
 		else                       return getDocId12(rec);
 	};
-	long long getCurrentDocId12 ( ) {
+	int64_t getCurrentDocId12 ( ) {
 		return getDocId12 ( m_listPtr ); };
-	long long getDocId12 ( char *rec ) {
-		return ((*(unsigned long long *)(rec)) >> 2) & DOCID_MASK; };
-	long long getDocId6 ( char *rec ) {
-		long long docid;
-		*(long *)(&docid) = *(long *)rec;
+	int64_t getDocId12 ( char *rec ) {
+		return ((*(uint64_t *)(rec)) >> 2) & DOCID_MASK; };
+	int64_t getDocId6 ( char *rec ) {
+		int64_t docid;
+		*(int32_t *)(&docid) = *(int32_t *)rec;
 		((char *)&docid)[4] = rec[4];
 		docid >>= 2;
 		return docid & DOCID_MASK;
@@ -420,14 +515,14 @@ class PosdbList : public RdbList {
 	void setScore ( char *rec , char score ) { rec[5] = score; };
 
 	// for date lists only...
-	long getCurrentDate ( ) { return ~*(long *)(m_listPtr+6); };
+	int32_t getCurrentDate ( ) { return ~*(int32_t *)(m_listPtr+6); };
 };
 */
 
 #include "Query.h"         // MAX_QUERY_TERMS, qvec_t
 
 // max # search results that can be viewed without using TopTree
-#define MAX_RESULTS 1000
+//#define MAX_RESULTS 1000
 
 class PosdbTable {
 
@@ -440,11 +535,15 @@ class PosdbTable {
 		   char           debug           ,
 		   void          *logstate        ,
 		   class TopTree *topTree         ,
-		   char          *coll            ,
+		   //char          *coll            ,
+		   collnum_t collnum ,
 		   //IndexList     *lists           ,
-		   //long           numLists        ,
+		   //int32_t           numLists        ,
 		   class Msg2 *msg2, 
 		   class          Msg39Request *r );
+
+	// pre-allocate m_whiteListTable
+	bool allocWhiteListTable ( ) ;
 
 	// pre-allocate memory since intersection runs in a thread
 	bool allocTopTree ( );
@@ -455,30 +554,32 @@ class PosdbTable {
 
 	//void intersectLists9_r ( );
 
-	void  getTermPairScoreForNonBody   ( long i, long j,
+	void  getTermPairScoreForNonBody   ( int32_t i, int32_t j,
 					     char *wpi, char *wpj, 
 					     char *endi, char *endj,
-					     long qdist ,
+					     int32_t qdist ,
 					     float *retMax );
-	float getSingleTermScore ( long i, char *wpi , char *endi,
+	float getSingleTermScore ( int32_t i, char *wpi , char *endi,
 				   class DocIdScore *pdcs,
 				   char **bestPos );
 
 	void evalSlidingWindow ( char **ptrs , 
-				 long   nr , 
+				 int32_t   nr , 
 				 char **bestPos ,
 				 float *scoreMatrix  ,
-				 long   advancedTermNum );
-	float getTermPairScoreForWindow ( long i, long j,
+				 int32_t   advancedTermNum );
+	float getTermPairScoreForWindow ( int32_t i, int32_t j,
 					  char *wpi,
 					  char *wpj,
-					  long fixedDistance
+					  int32_t fixedDistance
 					  );
 
-	float getTermPairScoreForAny   ( long i, long j,
+	float getTermPairScoreForAny   ( int32_t i, int32_t j,
 					 char *wpi, char *wpj, 
 					 char *endi, char *endj,
 					 class DocIdScore *pdcs );
+
+	bool makeDocIdVoteBufForBoolQuery_r ( ) ;
 
 	// some generic stuff
 	PosdbTable();
@@ -491,39 +592,45 @@ class PosdbTable {
 	// has init already been called?
 	bool isInitialized ( ) { return m_initialized; };
 
-	unsigned long long m_docId;
+	uint64_t m_docId;
 
-	unsigned long long m_docIdHack;
+	uint64_t m_docIdHack;
+
+	bool m_hasFacetTerm;
+
+	bool m_hasMaxSerpScore;
 
 	// hack for seo.cpp:
 	float m_finalScore;
 	float m_preFinalScore;
 
+	float m_siteRankMultiplier;
+
 	// how long to add the last batch of lists
-	long long       m_addListsTime;
-	long long       m_t1 ;
-	long long       m_t2 ;
+	int64_t       m_addListsTime;
+	int64_t       m_t1 ;
+	int64_t       m_t2 ;
 
-	long long       m_estimatedTotalHits;
+	int64_t       m_estimatedTotalHits;
 
-	long            m_errno;
+	int32_t            m_errno;
 
-	long            m_numSlots;
+	int32_t            m_numSlots;
 
-	long            m_maxScores;
+	int32_t            m_maxScores;
 
-	char           *m_coll;
+	//char           *m_coll;
 	collnum_t       m_collnum;
 
-	long *m_qpos;
-	long *m_wikiPhraseIds;
-	long *m_quotedStartIds;
+	int32_t *m_qpos;
+	int32_t *m_wikiPhraseIds;
+	int32_t *m_quotedStartIds;
 	//class DocIdScore *m_ds;
-	long  m_qdist;
+	int32_t  m_qdist;
 	float *m_freqWeights;
-	//long long *m_freqs;
+	//int64_t *m_freqs;
 	char  *m_bflags;
-	long  *m_qtermNums;
+	int32_t  *m_qtermNums;
 	float m_bestWindowScore;
 	//char **m_finalWinners1;
 	//char **m_finalWinners2;
@@ -531,11 +638,11 @@ class PosdbTable {
 	char **m_windowTermPtrs;
 
 	// how many docs in the collection?
-	long long m_docsInColl;
+	int64_t m_docsInColl;
 
-	SectionStats m_sectionStats;
-	SafeBuf m_siteHashList;
-	HashTableX m_dt;
+	//SectionStats m_sectionStats;
+	//SafeBuf m_facetHashList;
+	//HashTableX m_dt;
 
 	class Msg2 *m_msg2;
 
@@ -549,15 +656,18 @@ class PosdbTable {
 	SafeBuf m_pairScoreBuf;
 	SafeBuf m_singleScoreBuf;
 
+	SafeBuf m_stackBuf;
+
 	//SafeBuf m_mergeBuf;
 
 	// a reference to the query
 	Query          *m_q;
+	int32_t m_nqt;
 
 	// these are NOT in imap space, but in query term space, 1-1 with 
 	// Query::m_qterms[]
 	//IndexList      *m_lists;
-	//long            m_numLists;
+	//int32_t            m_numLists;
 
 	// has init() been called?
 	bool            m_initialized;
@@ -566,48 +676,87 @@ class PosdbTable {
 	char            m_debug;
 
 	// for debug msgs
-	long            m_logstate;
+	void *m_logstate;
 
-	//long long       m_numDocsInColl;
+	//int64_t       m_numDocsInColl;
 
 	class Msg39Request *m_r;
+
+	// for gbsortby:item.price ...
+	int32_t m_sortByTermNum;
+	int32_t m_sortByTermNumInt;
+
+	// fix core with these two
+	int32_t m_sortByTermInfoNum;
+	int32_t m_sortByTermInfoNumInt;
+
+	// for gbmin:price:1.99
+	int32_t m_minScoreTermNum;
+	int32_t m_maxScoreTermNum;
+
+	// for gbmin:price:1.99
+	float m_minScoreVal;
+	float m_maxScoreVal;
+
+	// for gbmin:count:99
+	int32_t m_minScoreTermNumInt;
+	int32_t m_maxScoreTermNumInt;
+
+	// for gbmin:count:99
+	int32_t m_minScoreValInt;
+	int32_t m_maxScoreValInt;
 
 
 	// the new intersection/scoring algo
 	void intersectLists10_r ( );	
+
+	HashTableX m_whiteListTable;
+	bool m_useWhiteTable;
+	bool m_addedSites;
 
 	// sets stuff used by intersect10_r()
 	bool setQueryTermInfo ( );
 
 	void shrinkSubLists ( class QueryTermInfo *qti );
 
+	int64_t countUniqueDocids( QueryTermInfo *qti ) ;
+
 	// for intersecting docids
-	void addDocIdVotes ( class QueryTermInfo *qti , long listGroupNum );
+	void addDocIdVotes ( class QueryTermInfo *qti , int32_t listGroupNum );
 
 	// for negative query terms...
 	void rmDocIdVotes ( class QueryTermInfo *qti );
 
 	// upper score bound
 	float getMaxPossibleScore ( class QueryTermInfo *qti ,
-				    long bestDist ,
-				    long qdist ,
+				    int32_t bestDist ,
+				    int32_t qdist ,
 				    class QueryTermInfo *qtm ) ;
 
 	// stuff set in setQueryTermInf() function:
 	SafeBuf              m_qiBuf;
-	long                 m_numQueryTermInfos;
+	int32_t                 m_numQueryTermInfos;
 	// the size of the smallest set of sublists. each sublists is
 	// the main term or a synonym, etc. of the main term.
-	long                 m_minListSize;
+	int32_t                 m_minListSize;
 	// which query term info has the smallest set of sublists
-	long                 m_minListi;
+	int32_t                 m_minListi;
 	// intersect docids from each QueryTermInfo into here
 	SafeBuf              m_docIdVoteBuf;
+
+	int32_t m_filtered;
+
+	// boolean truth table for boolean queries
+	HashTableX m_bt;
+	HashTableX m_ct;
+	// size of the data slot in m_bt
+	int32_t m_vecSize;
+
 	// are all positive query terms in same wikipedia phrase like
 	// 'time enough for love'?
 	bool m_allInSameWikiPhrase;
 
-	long m_realMaxTop;
+	int32_t m_realMaxTop;
 };
 
 #define MAXDST 10
@@ -632,17 +781,17 @@ class PairScore {
 	char  m_hashGroup2;
 	char  m_inSameWikiPhrase;
 	char  m_fixedDistance;
-	long  m_wordPos1;
-	long  m_wordPos2;
-	long long m_termFreq1;
-	long long m_termFreq2;
+	int32_t  m_wordPos1;
+	int32_t  m_wordPos2;
+	int64_t m_termFreq1;
+	int64_t m_termFreq2;
 	float     m_tfWeight1;
 	float     m_tfWeight2;
-	long m_qtermNum1;
-	long m_qtermNum2;
+	int32_t m_qtermNum1;
+	int32_t m_qtermNum2;
 	char m_bflags1;
 	char m_bflags2;
-	long m_qdist;
+	int32_t m_qdist;
 };
 
 class SingleScore {
@@ -654,10 +803,10 @@ class SingleScore {
 	char  m_densityRank;
 	char  m_wordSpamRank;
 	char  m_hashGroup;
-	long  m_wordPos;
-	long long m_termFreq; // float m_termFreqWeight;
+	int32_t  m_wordPos;
+	int64_t m_termFreq; // float m_termFreqWeight;
 	float m_tfWeight;
-	long m_qtermNum;
+	int32_t m_qtermNum;
 	char m_bflags;
 };
 
@@ -682,14 +831,17 @@ class DocIdScore {
 	// we use QueryChange::getDebugDocIdScore() to "deserialize" per se
 	bool serialize   ( class SafeBuf *sb );
 
-	long long   m_docId;
-	float       m_finalScore;
+	int64_t   m_docId;
+	// made this a double because of intScores which can't be captured
+	// fully with a float. intScores are used to sort by spidered time
+	// for example. see Posdb.cpp "intScore".
+	double      m_finalScore;
 	char        m_siteRank;
-	long        m_docLang; // langId
-	long        m_numRequiredTerms;
+	int32_t        m_docLang; // langId
+	int32_t        m_numRequiredTerms;
 
-	long m_numPairs;
-	long m_numSingles;
+	int32_t m_numPairs;
+	int32_t m_numSingles;
 
 	// . m_pairScores is just all the term pairs serialized
 	// . they contain their query term #1 of each term in the pair and
@@ -698,10 +850,10 @@ class DocIdScore {
 	//   whose scores we add together to get the final score for that pair
 	// . record offset into PosdbTable::m_pairScoreBuf
 	// . Msg39Reply::ptr_pairScoreBuf will be this
-	long m_pairsOffset;
+	int32_t m_pairsOffset;
 	// . record offset into PosdbTable.m_singleScoreBuf
 	// . Msg39Reply::ptr_singleScoreBuf will be this
-	long m_singlesOffset;
+	int32_t m_singlesOffset;
 	//PairScore   m_pairScores  [MAXDST][MAXDST][MAX_TOP];
 	//SingleScore m_singleScores[MAXDST]        [MAX_TOP];
 
@@ -718,10 +870,10 @@ extern RdbCache g_termFreqCache;
 
 // . b-step into list looking for docid "docId"
 // . assume p is start of list, excluding 6 byte of termid
-inline char *getWordPosList ( long long docId , char *list , long listSize ) {
+inline char *getWordPosList ( int64_t docId , char *list , int32_t listSize ) {
 	// make step divisible by 6 initially
-	long step = (listSize / 12) * 6;
-	// shortcut
+	int32_t step = (listSize / 12) * 6;
+	// int16_tcut
 	char *listEnd = list + listSize;
 	// divide in half
 	char *p = list + step;
@@ -736,7 +888,7 @@ inline char *getWordPosList ( long long docId , char *list , long listSize ) {
 	// ok, we hit a 12 byte key i guess, so backup 6 more
 	p -= 6;
 	// ok, we got a 12-byte key then i guess
-	long long d = g_posdb.getDocId ( p );
+	int64_t d = g_posdb.getDocId ( p );
 	// we got a match, but it might be a NEGATIVE key so
 	// we have to try to find the positive keys in that case
 	if ( d == docId ) {

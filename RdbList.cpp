@@ -15,6 +15,13 @@
 #include "Linkdb.h"
 #include "sched.h"
 
+/////
+//
+// we no longer do ALLOW_SCALE! now user can click "rebalance shards"
+// to scan all rdbs of every coll and move the recs to the appropriate
+// shard in real time.
+//
+/////
 //#define ALLOW_SCALE
 
 void RdbList::constructor () { 
@@ -91,7 +98,7 @@ bool RdbList::copyList ( RdbList *listSrc ) {
 	// sanity
 	if ( listSrc->m_listSize < 0 ) { char *xx=NULL;*xx=0; }
 	// basically just copy
-	memcpy ( this , listSrc , sizeof(RdbList) );
+	gbmemcpy ( this , listSrc , sizeof(RdbList) );
 	// null out our crap in case the copy fails or list is empty
 	m_list      = NULL;
 	m_listSize  = 0;
@@ -103,7 +110,7 @@ bool RdbList::copyList ( RdbList *listSrc ) {
 	// otherwise we gotta copy the list data itself
 	char *copy = (char *)mmalloc ( listSrc->m_listSize, "lstcp");
 	if ( ! copy ) return false;
-	memcpy ( copy , listSrc->m_list , listSrc->m_listSize );
+	gbmemcpy ( copy , listSrc->m_list , listSrc->m_listSize );
 	// now we use the copy
 	m_list      = copy;
 	m_listSize  = listSrc->m_listSize;
@@ -118,14 +125,14 @@ bool RdbList::copyList ( RdbList *listSrc ) {
 // . set from a pre-existing list
 // . all keys of records in list must be in [startKey,endKey]
 void RdbList::set ( char  *list          , 
-		    long   listSize      , 
+		    int32_t   listSize      , 
 		    char  *alloc         ,
-		    long   allocSize     ,
+		    int32_t   allocSize     ,
 		    //key_t  startKey      , 
 		    //key_t  endKey        ,
 		    char  *startKey      , 
 		    char  *endKey        ,
-		    long   fixedDataSize , 
+		    int32_t   fixedDataSize , 
 		    bool   ownData       ,
 		    bool   useHalfKeys   ,
 		    char   keySize       ) {
@@ -168,10 +175,10 @@ void RdbList::set ( char  *list          ,
 
 // like above but uses 0/maxKey for startKey/endKey
 void RdbList::set (char *list          , 
-		   long  listSize      , 
+		   int32_t  listSize      , 
 		   char *alloc         ,
-		   long  allocSize     ,
-		   long  fixedDataSize , 
+		   int32_t  allocSize     ,
+		   int32_t  fixedDataSize , 
 		   bool  ownData       ,
 		   bool  useHalfKeys   ,
 		   char  keySize       ) {
@@ -220,7 +227,7 @@ void RdbList::setLastKey  ( char *k ) {
 
 // this has to scan through each record for variable sized records and
 // if m_useHalfKeys is true
-long RdbList::getNumRecs ( ) {
+int32_t RdbList::getNumRecs ( ) {
 	// we only keep this count for lists of variable sized records
 	if ( m_fixedDataSize == 0 && ! m_useHalfKeys ) 
 	//	return m_listSize / ( sizeof(key_t) + m_fixedDataSize );
@@ -231,7 +238,7 @@ long RdbList::getNumRecs ( ) {
 	// reset m_listPtr and m_listPtrHi
 	resetListPtr();
 	// count each record individually since they're variable size
-	long count = 0;
+	int32_t count = 0;
 	// go through each record
 	while ( ! isExhausted() ) {
 		count++;
@@ -246,7 +253,7 @@ long RdbList::getNumRecs ( ) {
 
 // . returns false and sets g_errno on error
 // . only used by Msg14.cpp for clusterdb at the time I wrote this
-bool RdbList::addRecordRaw ( char *rec , long recSize ) {
+bool RdbList::addRecordRaw ( char *rec , int32_t recSize ) {
 	// return false if we don't own the data
 	if ( ! m_ownData ) { 
 		log("db: rdblist: addRecord: Data not owned.");
@@ -256,8 +263,8 @@ bool RdbList::addRecordRaw ( char *rec , long recSize ) {
 	if ( m_listEnd + recSize >  m_alloc + m_allocSize ) 
 		if ( ! growList ( m_allocSize + recSize ) )
 			return false;// log("RdbList::merge: growList failed");
-	// memcpy the key to the end of the list
-	memcpy ( m_list + m_listSize , rec , recSize );
+	// gbmemcpy the key to the end of the list
+	gbmemcpy ( m_list + m_listSize , rec , recSize );
 	m_listSize += recSize;
 	m_listEnd  += recSize;
 	return true;
@@ -268,13 +275,19 @@ bool RdbList::addRecordRaw ( char *rec , long recSize ) {
 // . used by merge() above to add records to merged list
 // . used by RdbTree to construct an RdbList from branches of records
 // . NOTE: does not set m_endKey/m_startKey/ etc..
-//bool RdbList::addRecord ( key_t &key , long dataSize , char *data ,
-bool RdbList::addRecord ( char *key , long dataSize , char *data ,
+//bool RdbList::addRecord ( key_t &key , int32_t dataSize , char *data ,
+bool RdbList::addRecord ( char *key , int32_t dataSize , char *data ,
 			  bool bitch ) {
 
 	if ( m_ks == 18 ) { // m_rdbId == RDB_POSDB ) {
 		// sanity
-		if ( key[0] & 0x06 ) { char *xx=NULL;*xx=0; }
+		if ( key[0] & 0x06 ) { 
+			log("rdblist: posdb: cannot add bad key. please "
+			    "delete posdb-buckets-saved.dat and restart.");
+			// return true so rdbbuckets::getlist doesn't stop
+			//return true;
+			char *xx=NULL;*xx=0; 
+		}
 		// grow the list if we need to
 		if ( m_listEnd + 18 >  m_alloc + m_allocSize )
 			if ( ! growList ( m_allocSize + 18 ) ) 
@@ -283,7 +296,7 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 			// compare next 6 bytes
 			if ( memcmp ( m_listPtrLo,key+6,6)==0) {
 				// store in end key
-				memcpy(m_listEnd,key,6);
+				gbmemcpy(m_listEnd,key,6);
 				// turn on both half bits
 				*m_listEnd |= 0x06;
 				// clear magic bit
@@ -294,7 +307,7 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 				return true;
 			}
 			// no match...
-			memcpy(m_listEnd,key,12);
+			gbmemcpy(m_listEnd,key,12);
 			// need to update this then
 			m_listPtrLo = m_listEnd+6;
 			// turn on just one compression bit
@@ -305,7 +318,7 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 			return true;
 		}
 		// no compression
-		memcpy(m_listEnd,key,18);
+		gbmemcpy(m_listEnd,key,18);
 		m_listPtrLo = m_listEnd+6;
 		m_listPtrHi = m_listEnd+12;
 		m_listSize += 18;
@@ -320,8 +333,8 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 		char *p = NULL; *p = 0;	exit(-1);
 	}
 	// get total size of the record
-	//long recSize = sizeof(key_t) + dataSize;
-	long recSize = m_ks + dataSize;
+	//int32_t recSize = sizeof(key_t) + dataSize;
+	int32_t recSize = m_ks + dataSize;
 	// sanity
 	if ( dataSize && KEYNEG(key) ) { char *xx=NULL;*xx=0; }
 	// . include the 4 bytes to store the dataSize if it's not fixed
@@ -342,11 +355,11 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 	     //memcmp ( m_listPtrHi, ((char *)&key)+6, 6 ) == 0 ) {
 	     memcmp ( m_listPtrHi, key+(m_ks-6), 6 ) == 0 ) {
 		// store low 6 bytes of key into m_list
-		//*(long *)&m_list[m_listSize] = *(long *)&key;
-		//*(short *)(&m_list[m_listSize+4]) = 
-		//	*(short *)&(((char *)&key)[4]);
+		//*(int32_t *)&m_list[m_listSize] = *(int32_t *)&key;
+		//*(int16_t *)(&m_list[m_listSize+4]) = 
+		//	*(int16_t *)&(((char *)&key)[4]);
 		//KEYSET(&m_list[m_listSize],key,m_ks-6);
-		memcpy(m_listEnd,key,m_ks-6);
+		gbmemcpy(m_listEnd,key,m_ks-6);
 		// turn on half bit
 		//m_list[m_listSize] |= 0x02;
 		*m_listEnd |= 0x02;
@@ -376,12 +389,12 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 	if ( m_fixedDataSize == 0 ) return true;
 	// copy the dataSize to the list if it's not fixed or negative...
 	if ( m_fixedDataSize == -1 && !KEYNEG(key) ) {
-		*(long *)(&m_list[m_listSize]) = dataSize ;
+		*(int32_t *)(&m_list[m_listSize]) = dataSize ;
 		m_listSize += 4;
 		m_listEnd  += 4;
 	}
 	// copy the data itself to the list
-	memcpy ( &m_list[m_listSize] , data , dataSize );
+	gbmemcpy ( &m_list[m_listSize] , data , dataSize );
 	m_listSize += dataSize;
 	m_listEnd  += dataSize;
 	return true;
@@ -395,8 +408,8 @@ bool RdbList::addRecord ( char *key , long dataSize , char *data ,
 // . allocates on top of m_listSize
 // . returns false and sets g_errno on error, true on success
 bool RdbList::prepareForMerge ( RdbList **lists         ,  
-				long      numLists      , 
-				long      minRecSizes   ) {
+				int32_t      numLists      , 
+				int32_t      minRecSizes   ) {
 	// return false if we don't own the data
 	if ( ! m_ownData ) { 
 		log("db: rdblist: prepareForMerge: Data not owned.");
@@ -423,8 +436,8 @@ bool RdbList::prepareForMerge ( RdbList **lists         ,
 	// call growList() in the merge_r() routine... that won't work since
 	// we'd be in a thread.
 	if ( m_fixedDataSize >= 0 && minRecSizes > 0 ) {
-		//long newmin = minRecSizes + sizeof(key_t) + m_fixedDataSize;
-		long newmin = minRecSizes + m_ks + m_fixedDataSize;
+		//int32_t newmin = minRecSizes + sizeof(key_t) + m_fixedDataSize;
+		int32_t newmin = minRecSizes + m_ks + m_fixedDataSize;
 		// we have to grow another 12 cuz we set "first" in
 		// indexMerge_r() to false and try to add another rec to see 
 		// if there was an annihilation
@@ -439,8 +452,8 @@ bool RdbList::prepareForMerge ( RdbList **lists         ,
 	// . temporarily set m_listPtr/m_listEnd of each list based on
 	//   the contraints: startKey/endKey
 	// . compute our max list size from all these ranges
-	long maxListSize = 0;
-	for ( long i = 0 ; i < numLists ; i++ ) {
+	int32_t maxListSize = 0;
+	for ( int32_t i = 0 ; i < numLists ; i++ ) {
 		// each list should be constrained already
 		maxListSize += lists[i]->getListSize();
 		// ensure same dataSize type for each list
@@ -448,7 +461,7 @@ bool RdbList::prepareForMerge ( RdbList **lists         ,
 		// bitch if not
 		g_errno = EBADENGINEER;
 		log(LOG_LOGIC,"db: rdblist: prepareForMerge: Non-uniform "
-		    "fixedDataSize. %li != %li.", 
+		    "fixedDataSize. %"INT32" != %"INT32".", 
 		    lists[i]->getFixedDataSize(), m_fixedDataSize );
 		return false;
 	}
@@ -463,13 +476,13 @@ bool RdbList::prepareForMerge ( RdbList **lists         ,
 	// . this should keep m_listPtr and m_listPtrHi in order, too
 	// . grow like 12 bytes extra since posdb might compress off 12
 	//   bytes in merge_r code.
-	long grow = m_mergeMinListSize;
+	int32_t grow = m_mergeMinListSize;
 
 	//if ( m_ks == 18 ) grow += 12;
 	// tack on a bit because rdbs that use compression like clusterdb,
 	// posdb, etc. in the merge_r() code check for buffer break and
 	// they use a full key size! so add that on here! otherwise, they
-	// exit before getting the full mintomerge and come up short
+	// exit before getting the full mintomerge and come up int16_t
 	grow += m_ks;
 
 	if ( growList ( grow ) ) return true;
@@ -485,21 +498,21 @@ void RdbList::getKey ( char *rec , char *key ) {
 	// posdb?
 	if ( m_ks == 18 ) {
 		if ( rec[0]&0x04 ) {
-			memcpy ( key+12,m_listPtrHi,6);
-			memcpy ( key+6 ,m_listPtrLo,6);
-			memcpy ( key,rec,6);
+			gbmemcpy ( key+12,m_listPtrHi,6);
+			gbmemcpy ( key+6 ,m_listPtrLo,6);
+			gbmemcpy ( key,rec,6);
 			// clear compressionbits (1+2+4+8)
 			key[0] &= 0xf9;
 			return;
 		}
 		if ( rec[0]&0x02 ) {
-			memcpy ( key+12 ,m_listPtrHi,6);
-			memcpy ( key,rec,12);
+			gbmemcpy ( key+12 ,m_listPtrHi,6);
+			gbmemcpy ( key,rec,12);
 			// clear compressionbits (1+2+4+8)
 			key[0] &= 0xf9;
 			return;
 		}
-		memcpy ( key , rec , 18 );
+		gbmemcpy ( key , rec , 18 );
 		return;
 	}
 
@@ -512,32 +525,32 @@ void RdbList::getKey ( char *rec , char *key ) {
 	// linkdb
 	if ( m_ks == sizeof(key224_t) ) {
 		// set top most 4 bytes from hi key
-		*(long  *)(&key[24]) = *(long  *)&m_listPtrHi[2];
+		*(int32_t  *)(&key[24]) = *(int32_t  *)&m_listPtrHi[2];
 		// next 2 bytes from hi key
-		*(short *)(&key[22]) = *(short *)m_listPtrHi;
+		*(int16_t *)(&key[22]) = *(int16_t *)m_listPtrHi;
 		// next 8 bytes from rec
-		*(long long *)(&key[ 14]) = *(long long *)&rec    [14];
+		*(int64_t *)(&key[ 14]) = *(int64_t *)&rec    [14];
 		// next 8 bytes from rec
-		*(long long *)(&key[  6]) = *(long long *)&rec    [ 6];
+		*(int64_t *)(&key[  6]) = *(int64_t *)&rec    [ 6];
 		// next 4 bytes from rec
-		*(long *)(&key[  2]) = *(long *)&rec    [ 2];
+		*(int32_t *)(&key[  2]) = *(int32_t *)&rec    [ 2];
 		// last 2 bytes from rec
-		*(short *)(&key[ 0]) = *(short *) rec;
+		*(int16_t *)(&key[ 0]) = *(int16_t *) rec;
 		// turn half bit off since this is the full 16 bytes
 		*key &= 0xfd;
 		return;
 	}
 	if ( m_ks == 24 ) {
 		// set top most 4 bytes from hi key
-		*(long  *)(&key[20]) = *(long  *)&m_listPtrHi[2];
+		*(int32_t  *)(&key[20]) = *(int32_t  *)&m_listPtrHi[2];
 		// next 2 bytes from hi key
-		*(short *)(&key[18]) = *(short *)m_listPtrHi;
+		*(int16_t *)(&key[18]) = *(int16_t *)m_listPtrHi;
 		// next 8 bytes from rec
-		*(long long *)(&key[ 10]) = *(long long *)&rec    [10];
+		*(int64_t *)(&key[ 10]) = *(int64_t *)&rec    [10];
 		// next 8 bytes from rec
-		*(long long *)(&key[  2]) = *(long long *)&rec    [ 2];
+		*(int64_t *)(&key[  2]) = *(int64_t *)&rec    [ 2];
 		// last 2 bytes from rec
-		*(short *)(&key[ 0]) = *(short *) rec;
+		*(int16_t *)(&key[ 0]) = *(int16_t *) rec;
 		// turn half bit off since this is the full 16 bytes
 		*key &= 0xfd;
 		return;
@@ -545,15 +558,15 @@ void RdbList::getKey ( char *rec , char *key ) {
 	//key_t key ;
 	if ( m_ks == 16 ) {
 		// set top most 4 bytes from hi key
-		*(long  *)(&key[12]) = *(long  *)&m_listPtrHi[2];
+		*(int32_t  *)(&key[12]) = *(int32_t  *)&m_listPtrHi[2];
 		// next 2 bytes from hi key
-		*(short *)(&key[10]) = *(short *)m_listPtrHi;
+		*(int16_t *)(&key[10]) = *(int16_t *)m_listPtrHi;
 		// next 4 bytes from rec
-		*(long  *)(&key[ 6]) = *(long  *)&rec    [6];
+		*(int32_t  *)(&key[ 6]) = *(int32_t  *)&rec    [6];
 		// next 4 bytes from rec
-		*(long  *)(&key[ 2]) = *(long  *)&rec    [2];
+		*(int32_t  *)(&key[ 2]) = *(int32_t  *)&rec    [2];
 		// last 2 bytes from rec
-		*(short *)(&key[ 0]) = *(short *) rec;
+		*(int16_t *)(&key[ 0]) = *(int16_t *) rec;
 		// turn half bit off since this is the full 16 bytes
 		*key &= 0xfd;
 		return;
@@ -561,34 +574,34 @@ void RdbList::getKey ( char *rec , char *key ) {
 	// sanity
 	if ( m_ks != 12 ) { char *xx=NULL;*xx=0; }
 	// set top most 4 bytes from hi key
-	//*(long  *)(&((char *)&key)[8]) = *(long  *)&m_listPtrHi[2];
+	//*(int32_t  *)(&((char *)&key)[8]) = *(int32_t  *)&m_listPtrHi[2];
 	// next 2 bytes from hi key
-	//*(short *)(&((char *)&key)[6]) = *(short *)m_listPtrHi;
+	//*(int16_t *)(&((char *)&key)[6]) = *(int16_t *)m_listPtrHi;
 	// next 4 bytes from rec
-	//*(long  *)(&((char *)&key)[2]) = *(long  *)&rec    [2];
+	//*(int32_t  *)(&((char *)&key)[2]) = *(int32_t  *)&rec    [2];
 	// last 2 bytes from rec
-	//*(short *)(&((char *)&key)[0]) = *(short *) rec;
+	//*(int16_t *)(&((char *)&key)[0]) = *(int16_t *) rec;
 	// turn half bit off since this is the full 12 bytes
 	//*(char *)(&key) &= 0xfd;
 	//return key;
-	*(long  *)(&key[8]) = *(long  *)&m_listPtrHi[2];
+	*(int32_t  *)(&key[8]) = *(int32_t  *)&m_listPtrHi[2];
 	// next 2 bytes from hi key
-	*(short *)(&key[6]) = *(short *)m_listPtrHi;
+	*(int16_t *)(&key[6]) = *(int16_t *)m_listPtrHi;
 	// next 4 bytes from rec
-	*(long  *)(&key[2]) = *(long  *)&rec    [2];
+	*(int32_t  *)(&key[2]) = *(int32_t  *)&rec    [2];
 	// last 2 bytes from rec
-	*(short *)(&key[0]) = *(short *) rec;
+	*(int16_t *)(&key[0]) = *(int16_t *) rec;
 	// turn half bit off since this is the full 12 bytes
 	*key &= 0xfd;
 }
 
-long RdbList::getDataSize ( char *rec ) {
+int32_t RdbList::getDataSize ( char *rec ) {
 	if ( m_fixedDataSize == 0 ) return 0;
 	// negative keys always have no datasize entry
 	if ( (rec[0] & 0x01) == 0 ) return 0;
 	if ( m_fixedDataSize >= 0 ) return m_fixedDataSize;
-	//return *(long  *)(rec+sizeof(key_t));
-	return *(long  *)(rec+m_ks);
+	//return *(int32_t  *)(rec+sizeof(key_t));
+	return *(int32_t  *)(rec+m_ks);
 }
 
 char *RdbList::getData ( char *rec ) {
@@ -603,7 +616,7 @@ char *RdbList::getData ( char *rec ) {
 
 
 // returns false on error and set g_errno
-bool RdbList::growList ( long newSize ) {
+bool RdbList::growList ( int32_t newSize ) {
 	// return false if we don't own the data
 	if ( ! m_ownData ) { 
 		log(LOG_LOGIC,"db: rdblist: growlist: Data not owned.");
@@ -617,13 +630,14 @@ bool RdbList::growList ( long newSize ) {
 	// don't shrink list
 	if ( newSize <= m_allocSize ) return true;
 	// debug msg
-	//log("RdbList::growList from %li to %li",m_allocSize , newSize );
+	// log("RdbList::growList 0x%"PTRFMT "from %"INT32" to %"INT32"",
+	//     (PTRTYPE)this,m_allocSize , newSize );
 	// make a new buffer
 	char *tmp =(char *) mrealloc ( m_alloc,m_allocSize,newSize,"RdbList");
-	//if ( (long)tmp == 0x904dbd0 )
+	//if ( (int32_t)tmp == 0x904dbd0 )
 	//	log("hey");
 	// debug msg
-	//log("tmp=%lx", (long)tmp);
+	//log("tmp=%"XINT32"", (int32_t)tmp);
 	// debug msg
 	//if ( newSize > 2500000 /*about 2.5megs*/ ) {
 	//	log("BIG LIST SIZE");
@@ -631,8 +645,8 @@ bool RdbList::growList ( long newSize ) {
 	//}
 	// return false and g_errno should be set to ENOMEM
 	// do not log down this low, log higher up -- out of memory
-	//return log("RdbList::growList: couldn't realloc from %li "
-	//	   "to %li", m_allocSize , newSize );
+	//return log("RdbList::growList: couldn't realloc from %"INT32" "
+	//	   "to %"INT32"", m_allocSize , newSize );
 	if ( ! tmp ) return false;
 	// if we got a different address then re-set the list
 	// TODO: fix this to keep our old list
@@ -685,11 +699,11 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 		return false;
 	}
 
-	if ( m_useHalfKeys && m_ks == 12 ) // m_ks != 18 && m_ks != 24 ) 
-		return checkIndexList_r ( removeNegRecs  , 
-					  sleepOnProblem );
+	// if ( m_useHalfKeys && m_ks == 12 ) // m_ks != 18 && m_ks != 24 ) 
+	// 	return checkIndexList_r ( removeNegRecs  , 
+	// 				  sleepOnProblem );
 
-	//log("m_list=%li",(long)m_list);
+	//log("m_list=%"INT32"",(int32_t)m_list);
 	//key_t oldk;
 	//oldk.n0 = 0 ; oldk.n1 = 0;
 	char oldk[MAX_KEY_BYTES];
@@ -702,7 +716,7 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 	//key_t acceptable ;
 	//acceptable.n1 = m_endKey.n1 ;
 	//acceptable.n0 = m_endKey.n0 ;
-	//acceptable += (unsigned long) 1;
+	//acceptable += (uint32_t) 1;
 	char acceptable[MAX_KEY_BYTES];
 	KEYSET ( acceptable , m_endKey , m_ks );
 	KEYADD ( acceptable , 1 , m_ks );
@@ -713,24 +727,69 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 	if ( KEYCMP(acceptable,KEYMIN(),m_ks)==0 )
 		KEYSET ( acceptable , m_endKey , m_ks );
 	char k[MAX_KEY_BYTES];
+
+	static int32_t th = 0;
+	if ( ! th ) th = hash64Lower_a ( "roottitles" , 10 );
+
 	while ( ! isExhausted() ) {
 		//key_t k = getCurrentKey();
 		getCurrentKey( k );
 		// if titleRec, check size
 		if ( rdbId == RDB_TITLEDB && ! KEYNEG(k) ) {
-			long dataSize = getCurrentDataSize();
+			int32_t dataSize = getCurrentDataSize();
 			char *data = NULL;
 			if ( dataSize >= 4 ) data = getCurrentData();
 			if ( data && 
-			     (*(long *)data < 0 || 
-			      *(long *)data > 100000000 ) ) {
-				char *xx = NULL; *xx = 0; }
+			     (*(int32_t *)data < 0 || 
+			      *(int32_t *)data > 100000000 ) ) {
+				log("rdblist: bad titlerec data for docid "
+				    "%"INT64,
+				    g_titledb.getDocIdFromKey((key_t *)k));
+				char *xx = NULL; *xx = 0; 
+			}
 		}		
+		// tagrec?
+		if ( rdbId == RDB_TAGDB && ! KEYNEG(k) ) {
+			//TagRec *gr = (TagRec *)getCurrentRec();
+			//Tag *tag = gr->getFirstTag   ( );
+			//for ( ; tag ; tag = gr->getNextTag ( tag ) ) {
+			Tag *tag = (Tag *)getCurrentRec();
+			if ( tag->m_type == th ) {
+				char *tdata = tag->getTagData();
+				int32_t tsize = tag->getTagDataSize();
+				// core if tag val is not \0 terminated
+				if ( tsize > 0 && tdata[tsize-1]!='\0' ) {
+					log("db: bad root title tag");
+					char *xx=NULL;*xx=0; }
+			}
+		}
+		if ( rdbId == RDB_SPIDERDB && ! KEYNEG(k) &&
+		     getCurrentDataSize() > 0 ) {
+			//char *data = getCurrentData();
+			char *rec = getCurrentRec();
+			// bad url in spider request?
+			if ( g_spiderdb.isSpiderRequest ( (key128_t *)rec ) ){
+				SpiderRequest *sr = (SpiderRequest *)rec;
+				if ( strncmp(sr->m_url,"http",4) != 0 ) {
+					log("db: spider req url");
+					char *xx=NULL;*xx=0;
+				}
+			}
+		}
+		// title bad uncompress size?
+		if ( rdbId == RDB_TITLEDB && ! KEYNEG(k) ) {
+			char *rec = getCurrentRec();
+			int32_t usize = *(int32_t *)(rec+12+4);
+			if ( usize <= 0 || usize>100000000) {
+				log("db: bad titlerec uncompress size");
+				char *xx=NULL;*xx=0; 
+			}
+		}
 		// debug msg
 		// pause if it's google
 		//if ((((k.n0)  >> 1) & 0x0000003fffffffffLL)  == 70166155664) 
 		//	log("hey you!");
-		//long dataSize = getCurrentDataSize();
+		//int32_t dataSize = getCurrentDataSize();
 		//if ( m_ks >= 18 ) // include linkdb and posdb now
 		//	log("db: key=%s",KEYSTR((unsigned char *)k,m_ks));
 		// special checks for debugging linkdb bug
@@ -739,7 +798,7 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 		//	hc = g_linkdb.getLinkerHopCount_uk((key192_t *)k);
 		//	if ( hc ) { char *xx=NULL;*xx=0; }
 		//}
-		//log("key.n1=%li key.n0=%lli dsize=%li",
+		//log("key.n1=%"INT32" key.n0=%"INT64" dsize=%"INT32"",
 		//	k.n1,k.n0,dataSize);
 		//if ( k <  oldk      ) {
 		//if ( k < m_startKey ) {
@@ -756,9 +815,9 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 			    "db: Key out of order in list of records.");
 			log("db: k1=%s",KEYSTR(oldk,m_ks));
 			log("db: k2=%s",KEYSTR(k,m_ks));
-			//log("db: k1.n1=%llx k1.n0=%llx",
+			//log("db: k1.n1=%"XINT64" k1.n0=%"XINT64"",
 			//    KEY1(oldk,m_ks),KEY0(oldk));
-			//log("db:k2.n1=%llx k2.n0=%llx",KEY1(k,m_ks),KEY0(k));
+			//log("db:k2.n1=%"XINT64" k2.n0=%"XINT64"",KEY1(k,m_ks),KEY0(k));
 			//char *xx=NULL;*xx=0;
 			//if ( sleepOnProblem ) {char *xx = NULL; *xx = 0; }
 			//if ( sleepOnProblem ) sleep(50000);
@@ -767,10 +826,10 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 		//if ( k > acceptable ) {
 		if ( KEYCMP(k,acceptable,m_ks)>0 ) {
 			log("db: Key after end key in list of records.");
-			//log("db: k.n1=%lx k.n0=%llx",k.n1,k.n0);
+			//log("db: k.n1=%"XINT32" k.n0=%"XINT64"",k.n1,k.n0);
 			log("db: k2=%s",KEYSTR(k,m_ks));
 			log("db: ak=%s",KEYSTR(acceptable,m_ks));
-			//log("db:e.n1=%lx e.n0=%llx",m_endKey.n1,m_endKey.n0);
+			//log("db:e.n1=%"XINT32" e.n0=%"XINT64"",m_endKey.n1,m_endKey.n0);
 			log("db: ek=%s",KEYSTR(m_endKey,m_ks));
 			if ( sleepOnProblem ) {char *xx = NULL; *xx = 0; }
 			if ( sleepOnProblem ) sleep(50000);
@@ -802,13 +861,13 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 		// save old guy
 		char *saved = m_listPtr;
 		// test this
-		//long recSize = getCurrentRecSize();
-		//log("db: recsize=%li",recSize);
+		//int32_t recSize = getCurrentRecSize();
+		//log("db: recsize=%"INT32"",recSize);
 		// advance to next guy
 		skipCurrentRecord();
 		// test this - no, might be end of list!
 		//recSize = getCurrentRecSize();
-		//log("db: recsize2=%li",recSize);
+		//log("db: recsize2=%"INT32"",recSize);
 		// sometimes dataSize is too big in corrupt lists
 		if ( m_listPtr > m_listEnd ) {
 			log(
@@ -838,12 +897,12 @@ bool RdbList::checkList_r ( bool removeNegRecs , bool sleepOnProblem ,
 		log(LOG_LOGIC,
 		    "db: rdbList: checkList_r: Got bad last key.");
 		log(LOG_LOGIC,
-		    //"db: rdbList: checkList_r: k.n1=%lx k.n0=%llx",
+		    //"db: rdbList: checkList_r: k.n1=%"XINT32" k.n0=%"XINT64"",
 		    //oldk.n1,oldk.n0);
 		    "db: rdbList: checkList_r: key=%s",
 		    KEYSTR(oldk,m_ks));
 		log(LOG_LOGIC,
-		    //"db: rdbList: checkList_r: l.n1=%lx l.n0=%llx",
+		    //"db: rdbList: checkList_r: l.n1=%"XINT32" l.n0=%"XINT64"",
 		    //m_lastKey.n1,m_lastKey.n0);
 		    "db: rdbList: checkList_r: key=%s",
 		    KEYSTR(m_lastKey,m_ks) );
@@ -903,18 +962,18 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 	char *startPtr   = m_startKey;
 	//char *startPtrHi = startPtr + 6;
 	char *startPtrHi = startPtr + (m_ks-6);
-	long status ;
+	int32_t status ;
 	if ( m_ks == 12 ) status = fcmp   ( p , phi , startPtr , startPtrHi );
 	else              status = bfcmp  ( p , phi , startPtr , startPtrHi );
 	//if ( fcmp ( p , phi , startPtr , startPtrHi ) < 0 ) {
 	if ( status < 0 ) {
 		log("db: Record key in list is before start key.");
 		//key_t k ;
-		//memcpy ( ((char *)&k)   , p   , 6 );
-		//memcpy ( ((char *)&k)+6 , phi , 6 );
-		//log("db: k.n1=%lx k.n0=%llx",
+		//gbmemcpy ( ((char *)&k)   , p   , 6 );
+		//gbmemcpy ( ((char *)&k)+6 , phi , 6 );
+		//log("db: k.n1=%"XINT32" k.n0=%"XINT64"",
 		//    k.n1,k.n0);
-		//log("db: s.n1=%lx s.n0=%llx",
+		//log("db: s.n1=%"XINT32" s.n0=%"XINT64"",
 		//    m_startKey.n1,m_startKey.n0);
 		if ( sleepOnProblem ) {char *xx = NULL; *xx=0;}
 		if ( sleepOnProblem ) sleep(50000);
@@ -923,7 +982,7 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 
 
  loop:
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 	// if upper 6 bytes of current key matches upper 6 of
 	// the last key, then it must be a half key
 	if (!isHalfBitOn(p) && oldp && memcmp(p+(m_ks-6),oldp+(m_ks-6),6)==0){
@@ -997,10 +1056,10 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 	if ( status > 0 ) {
 		log("db: Got record key in list over end key.");
 		//key_t k ;
-		//memcpy ( ((char *)&k)   , oldp   , 6 );
-		//memcpy ( ((char *)&k)+6 , oldphi , 6 );
-		//log("db: k.n1=%lx k.n0=%llx",k.n1,k.n0);
-		//log("db: e.n1=%lx e.n0=%llx",m_endKey.n1,m_endKey.n0);
+		//gbmemcpy ( ((char *)&k)   , oldp   , 6 );
+		//gbmemcpy ( ((char *)&k)+6 , oldphi , 6 );
+		//log("db: k.n1=%"XINT32" k.n0=%"XINT64"",k.n1,k.n0);
+		//log("db: e.n1=%"XINT32" e.n0=%"XINT64"",m_endKey.n1,m_endKey.n0);
 		if ( sleepOnProblem ) {char *xx = NULL; *xx=0;}
 		if ( sleepOnProblem ) sleep(50000);
 		return false;
@@ -1031,16 +1090,16 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 	     status != 0 ) {
 		log(LOG_LOGIC,"db: Got bad last key.");
 		//key_t k ;
-		//memcpy ( ((char *)&k)   , oldp   , 6 );
-		//memcpy ( ((char *)&k)+6 , oldphi , 6 );
+		//gbmemcpy ( ((char *)&k)   , oldp   , 6 );
+		//gbmemcpy ( ((char *)&k)+6 , oldphi , 6 );
 		char k[MAX_KEY_BYTES];
-		memcpy ( k          , oldp   , m_ks-6 );
-		memcpy ( k+(m_ks-6) , oldphi , 6 );
-		//log(LOG_LOGIC,"db: k.n1=%lx k.n0=%llx",k.n1,k.n0);
-		//log(LOG_LOGIC,"db: l.n1=%lx l.n0=%llx",
+		gbmemcpy ( k          , oldp   , m_ks-6 );
+		gbmemcpy ( k+(m_ks-6) , oldphi , 6 );
+		//log(LOG_LOGIC,"db: k.n1=%"XINT32" k.n0=%"XINT64"",k.n1,k.n0);
+		//log(LOG_LOGIC,"db: l.n1=%"XINT32" l.n0=%"XINT64"",
 		//    m_lastKey.n1,m_lastKey.n0);
-		log(LOG_LOGIC,"db: k.n1=%llx k.n0=%llx",KEY1(k,m_ks),KEY0(k));
-		log(LOG_LOGIC,"db: L.n1=%llx L.n0=%llx",
+		log(LOG_LOGIC,"db: k.n1=%"XINT64" k.n0=%"XINT64"",KEY1(k,m_ks),KEY0(k));
+		log(LOG_LOGIC,"db: L.n1=%"XINT64" L.n0=%"XINT64"",
 		    KEY1(m_lastKey,m_ks),KEY0(m_lastKey));
 		if ( sleepOnProblem ) {char *xx = NULL; *xx=0;}
 		if ( sleepOnProblem ) sleep(50000);
@@ -1051,10 +1110,10 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 	// . otherwise, last key is now valid
 	// . this is only good for the call to Msg5::getRemoteList()
 	if ( ! m_lastKeyIsValid ) {
-		//memcpy ( ((char *)&m_lastKey)   , oldp   , 6 );
-		//memcpy ( ((char *)&m_lastKey)+6 , oldphi , 6 );
-		memcpy ( m_lastKey          , oldp   , (m_ks-6) );
-		memcpy ( m_lastKey+(m_ks-6) , oldphi , 6 );
+		//gbmemcpy ( ((char *)&m_lastKey)   , oldp   , 6 );
+		//gbmemcpy ( ((char *)&m_lastKey)+6 , oldphi , 6 );
+		gbmemcpy ( m_lastKey          , oldp   , (m_ks-6) );
+		gbmemcpy ( m_lastKey+(m_ks-6) , oldphi , 6 );
 		m_lastKeyIsValid = true;
 	}
 	// don't do this any more cuz we like to call merge_r back-to-back
@@ -1067,9 +1126,9 @@ bool RdbList::checkIndexList_r ( bool removeNegRecs , bool sleepOnProblem ) {
 // . return false and set g_errno on error
 // . repairlist repair the list
 bool RdbList::removeBadData_r ( ) {
-	long  orderCount = 0;
-	long  rangeCount = 0;
-	long  loopCount  = 0;
+	int32_t  orderCount = 0;
+	int32_t  rangeCount = 0;
+	int32_t  loopCount  = 0;
 	log("rdblist: trying to remove bad data from list");
  top:
 	if ( ++loopCount >= 2000 ) {
@@ -1084,16 +1143,23 @@ bool RdbList::removeBadData_r ( ) {
 	// . if not fixed size, remove all the data for now
 	// . TODO: make this better, man
 	if ( m_fixedDataSize == -1 ) {
-		reset();
+		// don't call reset because it sets m_ks back to 12
+		//reset();
+		m_listSize = 0;
+		m_list = NULL;
+		m_listPtr = NULL;
+		m_listEnd = NULL;
+		m_mergeMinListSize = -1;
+		m_lastKeyIsValid = false;
 		return true;
 	}
 	//key_t oldk;
 	char  oldk[MAX_KEY_BYTES];
-	long  oldRecSize = 0;
+	int32_t  oldRecSize = 0;
 	char *bad     = NULL;
 	char *badEnd  = NULL;
-	long  oldSize = m_listSize;
-	long  minSize = m_ks - 6;
+	int32_t  oldSize = m_listSize;
+	int32_t  minSize = m_ks - 6;
 	// posdb recs can be 6 12 or 18 bytes
 	if ( m_ks == 18 ) minSize = 6;
 	while ( ! isExhausted() ) {
@@ -1101,16 +1167,16 @@ bool RdbList::removeBadData_r ( ) {
 		// watch out for rec sizes that are too small
 		//if ( rec + 6 > m_listEnd ) {
 		if ( rec + minSize > m_listEnd ) {
-			log("db: Record size of %li is too big. "
+			log("db: Record size of %"INT32" is too big. "
 			    "Truncating list at record.",minSize);
 			m_listEnd = rec;
 			m_listSize = m_listEnd - m_list;
 			goto top;
 		}
-		long size = getCurrentRecSize();
+		int32_t size = getCurrentRecSize();
 		// or too big
 		if ( rec + size > m_listEnd ) {
-			log("db: Record size of %li is too big. "
+			log("db: Record size of %"INT32" is too big. "
 			    "Truncating list at record.",size);
 			m_listEnd = rec;
 			m_listSize = m_listEnd - m_list;
@@ -1119,7 +1185,7 @@ bool RdbList::removeBadData_r ( ) {
 		// size must be at least 6 -- corruption causes negative sizes
 		//if ( size < 6 ) {
 		if ( size < minSize ) {
-			log( "db: Record size of %li is too small. "
+			log( "db: Record size of %"INT32" is too small. "
 			    "Truncating list at record.",size);
 			m_listEnd = rec;
 			m_listSize = m_listEnd - m_list;
@@ -1147,10 +1213,10 @@ bool RdbList::removeBadData_r ( ) {
 		//   bad range
 		// . if we were good, bury any badness we might have had before
 		if ( bad ) {
-			long n = m_listEnd - badEnd;
+			int32_t n = m_listEnd - badEnd;
 			memmove ( bad , badEnd , n );
 			// decrease list size
-			long bsize = badEnd - bad;
+			int32_t bsize = badEnd - bad;
 			m_listSize -= bsize;
 			m_listEnd  -= bsize;
 			bad = NULL;
@@ -1164,10 +1230,10 @@ bool RdbList::removeBadData_r ( ) {
 			// bury both right away
 			bad    = rec - oldRecSize;
 			badEnd = rec + size;
-			long n = m_listEnd - badEnd;
+			int32_t n = m_listEnd - badEnd;
 			memmove ( bad , badEnd , n );
 			// decrease list size
-			long bsize = badEnd - bad;
+			int32_t bsize = badEnd - bad;
 			m_listSize -= bsize;
 			m_listEnd  -= bsize;
 			orderCount++;
@@ -1185,7 +1251,7 @@ bool RdbList::removeBadData_r ( ) {
 	// if we had badness at the end, bury it, no memmove required
 	if ( bad ) {
 		// decrease list size
-		long bsize = badEnd - bad;
+		int32_t bsize = badEnd - bad;
 		m_listSize -= bsize;
 		m_listEnd  -= bsize;
 	}
@@ -1197,12 +1263,12 @@ bool RdbList::removeBadData_r ( ) {
 	resetListPtr();
 	// msg -- taken out since will be in thread usually
 	log(
-	    "db: Removed %li bytes of data from list to make it sane." ,
+	    "db: Removed %"INT32" bytes of data from list to make it sane." ,
 	    oldSize-m_listSize );
 	log(
-	    "db: Removed %li recs to fix out of order problem.",orderCount*2);
+	    "db: Removed %"INT32" recs to fix out of order problem.",orderCount*2);
 	log(
-	    "db: Removed %li recs to fix out of range problem.",rangeCount  );
+	    "db: Removed %"INT32" recs to fix out of range problem.",rangeCount  );
 
 	// sanity. assume posdb???
 	//if ( m_ks == 18 ) {
@@ -1215,7 +1281,7 @@ bool RdbList::removeBadData_r ( ) {
 }
 
 int RdbList::printList ( ) {
-	//log("m_list=%li",(long)m_list);
+	//log("m_list=%"INT32"",(int32_t)m_list);
 	// save
 	char *oldp   = m_listPtr;
 	char *oldphi = m_listPtrHi;
@@ -1225,12 +1291,12 @@ int RdbList::printList ( ) {
 		//key_t k = getCurrentKey();
 		char k[MAX_KEY_BYTES];
 		getCurrentKey(k);
-		long dataSize = getCurrentDataSize();
+		int32_t dataSize = getCurrentDataSize();
 		char *d;
 		if ( (*m_listPtr & 0x01) == 0x00 ) d = " (del)";
 		else                               d = "";
 		log(LOG_INFO,
-		    "db: k=%s dsize=%07li%s",
+		    "db: k=%s dsize=%07"INT32"%s",
 		    KEYSTR(k,m_ks),dataSize,d);
 		skipCurrentRecord();
 	}
@@ -1261,12 +1327,12 @@ int RdbList::printList ( ) {
 //			  key_t   endKey      ,
 bool RdbList::constrain ( char   *startKey    , 
 			  char   *endKey      ,
-			  long    minRecSizes ,
-			  long    hintOffset  ,
+			  int32_t    minRecSizes ,
+			  int32_t    hintOffset  ,
 			  //key_t   hintKey     ,
 			  char   *hintKey     ,
 			  char   *filename    ,
-			  long    niceness    ) {
+			  int32_t    niceness    ) {
 	// return false if we don't own the data
 	if ( ! m_ownData ) { 
 		g_errno = EBADLIST;
@@ -1284,14 +1350,27 @@ bool RdbList::constrain ( char   *startKey    ,
 	// ensure we our first key is 12 bytes if m_useHalfKeys is true
 	if ( m_useHalfKeys && isHalfBitOn ( m_list ) ) {
 		g_errno = ECORRUPTDATA;
+		g_numCorrupt++;
 		return log("db: First key is 6 bytes. Corrupt data "
 			   "file.");
 	}
 
 	// sanity. hint key should be full key
-	if ( m_ks == 18 && hintKey && (hintKey[0]&0x06)){char *xx=NULL;*xx=0;}
+	if ( m_ks == 18 && hintKey && (hintKey[0]&0x06)){
+		g_errno = ECORRUPTDATA;
+		g_numCorrupt++;
+		return log("db: Hint key is corrupt.");
+		//char *xx=NULL;*xx=0;}
+	}
 
-	if ( hintOffset > m_listSize ) { char *xx=NULL;*xx=0; }
+	if ( hintOffset > m_listSize ) { //char *xx=NULL;*xx=0; }
+		g_errno = ECORRUPTDATA;
+		g_numCorrupt++;
+		return log("db: Hint offset %"INT32" > %"INT32" is corrupt."
+			   ,hintOffset,
+			   m_listSize);
+	}
+
 
 	// . no need to constrain if our keys are stricter
 	// . yes... need to set m_lastKey
@@ -1303,7 +1382,7 @@ bool RdbList::constrain ( char   *startKey    ,
 	char *savelistPtrHi = m_listPtrHi;
 	char *savelistPtrLo = m_listPtrLo;
 
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 	char lastKey[MAX_KEY_BYTES];
 	KEYMIN(lastKey,m_ks);
 #endif
@@ -1322,7 +1401,7 @@ bool RdbList::constrain ( char   *startKey    ,
 	while ( p < m_listEnd ) {
 		QUICKPOLL(niceness);
 		getKey(p,k); 
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 		// check key order!
 		if ( KEYCMP(k,lastKey,m_ks)<= 0 ) { 
 			log("constrain: key=%s out of order",
@@ -1333,9 +1412,9 @@ bool RdbList::constrain ( char   *startKey    ,
 #endif
 		// stop if we are >= startKey
 		if ( KEYCMP(k,startKey,m_ks) >= 0 ) break;
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 		// debug msg
-		log("constrain: skipping key=%s rs=%li",
+		log("constrain: skipping key=%s rs=%"INT32"",
 		    KEYSTR(k,m_ks),getRecSize(p));
 #endif
 		// . since we don't call skipCurrentRec() we must update 
@@ -1346,13 +1425,14 @@ bool RdbList::constrain ( char   *startKey    ,
 		// posdb uses two compression bits
 		if ( m_ks == 18 && !(p[0]&0x04)) m_listPtrLo = p + (m_ks-12);
 		// get size of this rec, this can be negative if corrupt!
-		long recSize = getRecSize ( p );
+		int32_t recSize = getRecSize ( p );
 		// watch out for corruption, let Msg5 fix it
 		if ( recSize < 0 ) {
 			m_listPtrHi = savelistPtrHi ;
 			m_listPtrLo = savelistPtrLo ;
 			g_errno = ECORRUPTDATA;
-			return log("db: Got record size of %li < 0. "
+			g_numCorrupt++;
+			return log("db: Got record size of %"INT32" < 0. "
 				   "Corrupt data file.",recSize);
 		}
 		p += recSize;
@@ -1406,9 +1486,9 @@ bool RdbList::constrain ( char   *startKey    ,
 	// sanity
 	//if ( p < m_list ) { char *xx=NULL;*xx=0; }
 
-#ifdef _SANITYCHECK_
+#ifdef GBSANITYCHECK
 	log("constrain: hk=%s",KEYSTR(hintKey,m_ks));
-	log("constrain: hintOff=%li",hintOffset);
+	log("constrain: hintOff=%"INT32"",hintOffset);
 #endif
 
 	// inc m_list , m_alloc should remain where it is
@@ -1458,14 +1538,17 @@ bool RdbList::constrain ( char   *startKey    ,
 	// if mincRecSizes is -1... do not constrain on this
 	if ( minRecSizes < 0 ) maxPtr = m_listEnd;
 	// size of last rec we read in the list
-	long size = -1 ;
+	int32_t size = -1 ;
+	// char *savedp = p;
+	// if ( savedp == (char *)0x001 ) { char *xx=NULL;*xx=0;}
 	// advance until endKey or minRecSizes kicks us out
 	//while ( p < m_listEnd && getKey(p) <= endKey && p < maxPtr ) {
 	while ( p < m_listEnd ) {
 		QUICKPOLL(niceness);
 		getKey(p,k);
 		if ( KEYCMP(k,endKey,m_ks)>0 ) break;
-		if ( p >= maxPtr ) break;
+		// only break out if we've set the size AND are >= maxPtr
+		if ( p >= maxPtr && size > 0 ) break;
 		size = getRecSize ( p );
 		// watch out for corruption, let Msg5 fix it
 		if ( size < 0 ) {
@@ -1474,7 +1557,8 @@ bool RdbList::constrain ( char   *startKey    ,
 			m_listPtrLo = savelistPtrLo;
 			m_listPtr   = savelist;
 			g_errno = ECORRUPTDATA;
-			return log("db: Corrupt record size of %li "
+			g_numCorrupt++;
+			return log("db: Corrupt record size of %"INT32" "
 				   "bytes in %s.",size,filename);
 		}
 		// set hiKey in case m_useHalfKeys is true for this list
@@ -1493,7 +1577,8 @@ bool RdbList::constrain ( char   *startKey    ,
 			m_listPtrLo = savelistPtrLo;
 			m_listPtr   = savelist;
 			g_errno = ECORRUPTDATA;
-			return log("db: Corrupt record size of %li "
+			g_numCorrupt++;
+			return log("db: Corrupt record size of %"INT32" "
 				   "bytes in %s.",size,filename);
 		}
 	}
@@ -1514,24 +1599,31 @@ bool RdbList::constrain ( char   *startKey    ,
 			m_listPtrLo = savelistPtrLo;
 			m_listPtr   = savelist;
 			g_errno = ECORRUPTDATA;
-			return log("db: Corrupt record size of %li "
+			g_numCorrupt++;
+			return log("db: Corrupt record size of %"INT32" "
 				   "bytes in %s.",size,filename);
 		}
 		// set endKey to last key in our constrained list
 		//endKey = getKey ( p - size );
 		getKey(p-size,endKey);
 	}
+	// bitch if size is -1 still
+	if ( size == -1 ) {
+		log("db: Corruption. Encountered bad endkey in %s.",filename);
+		char *xx=NULL;*xx=0;
+		m_list      = savelist;
+		m_listPtrHi = savelistPtrHi;
+		m_listPtrLo = savelistPtrLo;
+		m_listPtr   = savelist;
+		g_errno = ECORRUPTDATA;
+		g_numCorrupt++;
+		return false;
+	}
 	// cut the tail
 	m_listEnd   = p;
 	m_listSize  = m_listEnd - m_list;
-	// bitch if size is -1 still
-	if ( size == -1 ) {
-		log("db: Encountered bad endkey in %s. listSize=%li",
-		    filename,m_listSize);
-		char *xx=NULL;*xx=0;
-	}
 	// otherwise store the last key if size is not -1
-	else if ( m_listSize > 0 ) {
+	if ( m_listSize > 0 ) {
 		//m_lastKey        = getKey ( p - size );
 		getKey(p-size,m_lastKey);
 		m_lastKeyIsValid = true;
@@ -1564,19 +1656,19 @@ bool RdbList::constrain ( char   *startKey    ,
 // . CAUTION: you should call constrain() on all "lists" before calling this
 //   so we don't have to do boundary checks on the keys here
 void RdbList::merge_r ( RdbList **lists         ,  
-			long      numLists      , 
+			int32_t      numLists      , 
 			//key_t     startKey      , 
 			//key_t     endKey        , 
 			char     *startKey      , 
 			char     *endKey        , 
-			long      minRecSizes   ,
+			int32_t      minRecSizes   ,
 			bool      removeNegRecs ,
 			char      rdbId         ,
-			long     *filtered      ,
-			long     *tfns          ,  // used for titledb
+			int32_t     *filtered      ,
+			int32_t     *tfns          ,  // used for titledb
 			RdbList  *tfndbList     ,  // used for titledb
 			bool      isRealMerge   ,
-			long      niceness      ) {
+			int32_t      niceness      ) {
 	// tfndb merging should always use indexMerge_r() now
 	if ( rdbId == RDB_TFNDB || rdbId == RDB2_TFNDB2 ) {
 		char *xx = NULL; *xx = 0; }
@@ -1594,13 +1686,16 @@ void RdbList::merge_r ( RdbList **lists         ,
 	// and it was causing a core because m_MergeMinListSize was -1
 	if ( numLists == 0 ) return;
 	// save this
-	long startListSize = m_listSize;
+	int32_t startListSize = m_listSize;
 	// did they call prepareForMerge()?
 	if ( m_mergeMinListSize == -1 ) {
 		log(LOG_LOGIC,"db: rdblist: merge_r: prepareForMerge() not "
-		    "called.");
+		    "called. ignoring error and returning emtpy list.");
+		// this happens if we nuke doledb during a merge of it. it
+		// is just bad timing
+		return;
 		// save state and dump core, sigBadHandler will catch this
-		char *p = NULL;	*p = 0;
+		//char *p = NULL;	*p = 0;
 	}
 	// already there?
 	if ( minRecSizes >= 0 && m_listSize >= minRecSizes ) return;
@@ -1624,18 +1719,24 @@ void RdbList::merge_r ( RdbList **lists         ,
 	// . we don't want any positive recs to go un annhilated
 	// . but don't worry about this check if start and end keys are equal
 	//if ( m_startKey != m_endKey && (m_endKey.n0 & 0x01) == 0x00 )
-	if ( KEYCMP(m_startKey,m_endKey,m_ks)!=0 && KEYNEG(m_endKey) )
-		log(LOG_LOGIC,"db: rdblist: merge_r: Illegal endKey for "
-		    "merging.");
+	// . MDW: this happens during the qainject1() qatest in qa.cpp that
+	//   deletes all the urls then does a dump of just negative keys.
+	//   so let's comment it out for now
+	if ( KEYCMP(m_startKey,m_endKey,m_ks)!=0 && KEYNEG(m_endKey) ) {
+		// log(LOG_LOGIC,"db: rdblist: merge_r: Illegal endKey for "
+		//     "merging rdb=%s. fixing.",getDbnameFromId(rdbId));
+		// make it legal so it will be read first NEXT time
+		KEYSUB(m_endKey,1,m_ks);
+	}
 	// do nothing if no lists passed in
 	if ( numLists <= 0 ) return;
 	// inherit the key size of what we merge
 	m_ks = lists[0]->m_ks;
 	// sanity check
-	for ( long i = 1 ; i < numLists ; i++ ) 
+	for ( int32_t i = 1 ; i < numLists ; i++ ) 
 		if ( lists[i]->m_ks != m_ks ) {
-			log("db: non conforming key size of %li != %li for "
-			    "list #%li.",(long)lists[i]->m_ks,(long)m_ks,i);
+			log("db: non conforming key size of %"INT32" != %"INT32" for "
+			    "list #%"INT32".",(int32_t)lists[i]->m_ks,(int32_t)m_ks,i);
 			char *xx = NULL; *xx = 0;
 		}
 	// bail if nothing requested
@@ -1655,7 +1756,7 @@ void RdbList::merge_r ( RdbList **lists         ,
 		return;
 	}
 
-	long required = -1;
+	int32_t required = -1;
 	// . if merge not necessary, print a warning message.
 	// . caller should have just called constrain() then
 	if ( numLists == 1 ) {
@@ -1667,8 +1768,8 @@ void RdbList::merge_r ( RdbList **lists         ,
 		required = m_listSize + lists[0]->m_listSize;
 	}
 	// otherwise, list #j has the minKey, although may not be min
-	long  mini ;
-	long  i    ;
+	int32_t  mini ;
+	int32_t  i    ;
 	// . find a value for "m_lastKey" that does not exist in any of lists
 	// . we increment by 2 too
 	// . if minKey is a delete, then make it a non-delete key
@@ -1683,18 +1784,18 @@ void RdbList::merge_r ( RdbList **lists         ,
 	bool  firstTime = true;
 	//char *lastNegKey = NULL;
 	char  lastNegKey[MAX_KEY_BYTES];
-	long  lastNegi = -1;
+	int32_t  lastNegi = -1;
 	// init highestKey
 	//highestKey.n1 = 0;
 	//highestKey.n0 = 0LL;
 	KEYSET(highestKey,KEYMIN(),m_ks);
 	// this is used for rolling back delete records
-	long lastListSize = m_listSize;
+	int32_t lastListSize = m_listSize;
 	// for seeing if negative rec is OLDER than positve key before
 	// annilating them together
-	//long lastMini = -1;
+	//int32_t lastMini = -1;
 	// two vars for removing negative recs from the end of the final list
-	long  savedListSize = -1;
+	int32_t  savedListSize = -1;
 	//key_t savedLastKey;
 	//key_t savedHighestKey;
 	char  savedLastKey[MAX_KEY_BYTES];
@@ -1710,19 +1811,19 @@ void RdbList::merge_r ( RdbList **lists         ,
 	//key_t mkey;
 	char ckey[MAX_KEY_BYTES];
 	char mkey[MAX_KEY_BYTES];
-	//long long prevDocId = 0LL;
+	//int64_t prevDocId = 0LL;
 	// set the yield point for yielding the processor
 	char *yieldPoint = NULL;
 	char minKey[MAX_KEY_BYTES];
 
-	long long tt1 = getTagTypeFromStr( "sitenuminlinksfresh");
-	long long tt2 = getTagTypeFromStr( "sitepop");
+	int64_t tt1 = getTagTypeFromStr( "sitenuminlinksfresh");
+	int64_t tt2 = getTagTypeFromStr( "sitepop");
 
 #ifdef ALLOW_SCALE
 	// remove keys that don't belong -- for when scaling number of servers
-	unsigned long groupId ;
-	unsigned long myGroupId = g_hostdb.m_groupId;
-	//unsigned long groupMask = g_hostdb.m_groupMask;
+	uint32_t groupId ;
+	uint32_t myGroupId = g_hostdb.m_groupId;
+	//uint32_t groupMask = g_hostdb.m_groupMask;
 #endif
 
  top:
@@ -1784,7 +1885,9 @@ void RdbList::merge_r ( RdbList **lists         ,
 		else                yieldPoint = m_listPtr + 500000;
 		// only do this for low priority stuff now, i am concerned
 		// about long merge times during queries (MDW)
-		if ( niceness > 0 ) sched_yield();
+		// this is showing up in the profiler, not sure why
+		// so try taking out.
+		//if ( niceness > 0 ) sched_yield();
 	}
 	// we're done if all lists are exhausted
 	if ( mini == -1 ) goto done;
@@ -1819,7 +1922,6 @@ void RdbList::merge_r ( RdbList **lists         ,
 	// if we are scaling, skip this stuff
 	//if ( g_conf.m_allowScale ) goto skipfilter;
 
-
 #ifdef ALLOW_SCALE
 
 	groupId = getGroupId ( rdbId , (key_t *)minKey );
@@ -1846,8 +1948,8 @@ void RdbList::merge_r ( RdbList **lists         ,
 		}
 		else {
 			// this means corruption, don't allow it anymore!
-			log ( "db: Found invalid rec in db. key=%lx %llx "
-			      "group=%li myGroup=%li",
+			log ( "db: Found invalid rec in db. key=%"XINT32" %"XINT64" "
+			      "group=%"INT32" myGroup=%"INT32"",
 			      ((key_t*)minKey)->n1,
 			      ((key_t*)minKey)->n0,
 			      groupId, myGroupId );
@@ -1899,7 +2001,7 @@ void RdbList::merge_r ( RdbList **lists         ,
 		//if (m_list + m_listSize + sizeof(key_t) >allocEnd) goto done;
 		if (m_list + m_listSize + m_ks >allocEnd ) goto done;
 		// watch out
-		//long foo;
+		//int32_t foo;
 		//if ( m_ks == 18 && m_listSize == 20136 )
 		//	foo = 1;
 		// add it using compression bits
@@ -1912,8 +2014,8 @@ void RdbList::merge_r ( RdbList **lists         ,
 	}
 	else {
 		// if adding the key would breech us, goto done
-		//long recSize=sizeof(key_t)+lists[mini]->getCurrentDataSize();
-		long recSize=m_ks+lists[mini]->getCurrentDataSize();
+		//int32_t recSize=sizeof(key_t)+lists[mini]->getCurrentDataSize();
+		int32_t recSize=m_ks+lists[mini]->getCurrentDataSize();
 		// negative keys have no datasize entry
 		if (m_fixedDataSize < 0 && ! KEYNEG(minKey) ) recSize += 4;
 		if (m_list + m_listSize + recSize > allocEnd) goto done;
@@ -2040,7 +2142,7 @@ void RdbList::merge_r ( RdbList **lists         ,
 		// so make it positive (dangling = unmatched)
 		//if ( (*(char *)&endKey & 0x01) == 0x00 ) 
 		if ( KEYNEG(endKey) )
-			//endKey += (unsigned long)1;
+			//endKey += (uint32_t)1;
 			KEYADD(endKey,1,m_ks);
 		// be careful not to increase original endkey, though
 		//if ( endKey < m_endKey ) m_endKey = endKey;
@@ -2055,8 +2157,8 @@ void RdbList::merge_r ( RdbList **lists         ,
 		char*xx=NULL;*xx=0; }
 
 	// dedup for spiderdb
-	if ( rdbId == RDB_SPIDERDB )
-		dedupSpiderdbList ( this , niceness , removeNegRecs );
+	//if ( rdbId == RDB_SPIDERDB )
+	//	dedupSpiderdbList ( this , niceness , removeNegRecs );
 
 	/*
 	if ( rdbId  == RDB_POSDB ) {
@@ -2077,9 +2179,9 @@ void RdbList::merge_r ( RdbList **lists         ,
 				   isRealMerge ,
 				   niceness );
 		// compare
-		long min = ttt.m_listSize;
+		int32_t min = ttt.m_listSize;
 		if ( min > m_listSize ) min = m_listSize;
-		for ( long k = 0 ; k < min ; k++ ) {
+		for ( int32_t k = 0 ; k < min ; k++ ) {
 			if ( ttt.m_list[k] !=  m_list[k] ) {
 				char *xx=NULL;*xx=0;}
 		}
@@ -2137,9 +2239,9 @@ void RdbList::testIndexMerge ( ) {
 	// make oldest list contain positive key
 	// next oldest list contain dup of positive key
 	// newest list contain the negative, should crush both keys
-	long buf1[] = { 0x040 , 0x00 , 0x00 };
-	long buf2[] = { 0x041 , 0x00 , 0x00 };
-	long buf3[] = { 0x041 , 0x00 , 0x00 };
+	int32_t buf1[] = { 0x040 , 0x00 , 0x00 };
+	int32_t buf2[] = { 0x041 , 0x00 , 0x00 };
+	int32_t buf3[] = { 0x041 , 0x00 , 0x00 };
 	//key_t startKey;
 	//key_t endKey;
 	char startKey[MAX_KEY_BYTES];
@@ -2164,11 +2266,11 @@ void RdbList::testIndexMerge ( ) {
 	char prevKey[MAX_KEY_BYTES];
 	//prevKey.setMin();
 	KEYMIN(prevKey,m_ks);
-	long prevCountPtr = 0;
-	long dupsRemoved = 0;
+	int32_t prevCountPtr = 0;
+	int32_t dupsRemoved = 0;
 	// set these like we are host #0 in the only group
-        unsigned long keep1 = g_hostdb.m_groupId;
-	unsigned long keep2 = g_hostdb.m_groupMask;
+        uint32_t keep1 = g_hostdb.m_groupId;
+	uint32_t keep2 = g_hostdb.m_groupMask;
 	g_hostdb.m_groupId   = 0;
 	g_hostdb.m_groupMask = 0;
 	indexMerge_r ( lists         , 
@@ -2192,7 +2294,7 @@ void RdbList::testIndexMerge ( ) {
 	g_hostdb.m_groupId   = keep1;
 	g_hostdb.m_groupMask = keep2;
 	// print the final list
-	//log("final list size=%li",m_listSize);
+	//log("final list size=%"INT32"",m_listSize);
 	//log("done");
 	if ( m_listSize != 12 ) { char *xx = NULL; *xx = 0; }
 
@@ -2206,10 +2308,10 @@ void RdbList::testIndexMerge ( ) {
 	KEYMIN(sk2,m_ks);
 	//0004b12da1019f01 docId=005038106688 e=0x33 tfn=224 clean=0 half=0 
 	//k1.n0 = 0x0004b12da1019f01LL; 
-	*(long long *)sk1 = 0x0004b12da1019f01LL; 
+	*(int64_t *)sk1 = 0x0004b12da1019f01LL; 
 	//0004b12da1019809 docId=005038106688 e=0x33 tfn=001 clean=0 half=0 
 	//k2.n0 = 0x0004b12da1019809LL; 
-	*(long long *)sk2 = 0x0004b12da1019809LL;
+	*(int64_t *)sk2 = 0x0004b12da1019809LL;
 	set ( big , 0 , big , 1000 , startKey , endKey , 0 , false , true, 12);
 	//list1.set ( (char *)&k1, 12, (char *)&k1, 12, 
 	list1.set ( sk1, 12, sk1, 12, 
@@ -2270,37 +2372,37 @@ void RdbList::testIndexMerge ( ) {
 // . as well as "prevCount" of the termid of that last key
 // . "fileIds" is the fileId the list is from, 1-1 with "lists"
 bool RdbList::indexMerge_r ( RdbList **lists         ,  
-			     long      numLists      ,
+			     int32_t      numLists      ,
 			     //key_t     startKey      ,
 			     //key_t     endKey        ,
 			     char     *startKey      ,
 			     char     *endKey        ,
-			     long      minRecSizes   ,
+			     int32_t      minRecSizes   ,
 			     bool      removeNegKeys ,
 			     //key_t     prevKey       ,
 			     char     *prevKey       ,
-			     long     *prevCountPtr  ,
-			     long      truncLimit    ,
-			     long     *dupsRemoved   ,
+			     int32_t     *prevCountPtr  ,
+			     int32_t      truncLimit    ,
+			     int32_t     *dupsRemoved   ,
 			     //bool      isTfndb       ,
 			     char      rdbId         ,
-			     long     *filtered      ,
+			     int32_t     *filtered      ,
 			     bool      doGroupMask   ,
 			     bool      isRealMerge   ,
 			     bool      useBigRootList ,
-			     long      niceness       ) {
+			     int32_t      niceness       ) {
 	// how big is our half key? (half key size)
 	uint8_t hks = m_ks - 6;
 	// count how many removed due to scaling number of servers
 	if ( filtered ) *filtered = 0;
 	if ( numLists == 0 ) return true;
 #ifdef _MERGEDEBUG_
-	//log(LOG_INFO,"mdw: sk.n1=%lu sk.n0=%llu ek.n1=%lu ek.n0=%llu",
+	//log(LOG_INFO,"mdw: sk.n1=%"UINT32" sk.n0=%"UINT64" ek.n1=%"UINT32" ek.n0=%"UINT64"",
 	    //startKey.n1, startKey.n0, endKey.n1, endKey.n0 );
-	log(LOG_INFO,"mdw: sk.n1=%llx sk.n0=%llx ek.n1=%llx ek.n0=%llx",
+	log(LOG_INFO,"mdw: sk.n1=%"XINT64" sk.n0=%"XINT64" ek.n1=%"XINT64" ek.n0=%"XINT64"",
 	    KEY1(startKey,m_ks),KEY0(startKey),KEY1(endKey,m_ks),KEY0(endKey));
-	long omini = -1;
-	long fns[MAX_RDB_FILES+1];
+	int32_t omini = -1;
+	int32_t fns[MAX_RDB_FILES+1];
 #endif
 	// did they call prepareForMerge()?
 	if ( m_allocSize < m_mergeMinListSize ) {
@@ -2346,8 +2448,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	if ( minRecSizes == 0 ) return true;
 
 	// get the biggest possible minKey so everyone's <= it
-	unsigned long long tmpHi = 0xffffffffffffffffLL;
-	unsigned long long tmpLo = 0LL;
+	uint64_t tmpHi = 0xffffffffffffffffLL;
+	uint64_t tmpLo = 0LL;
 
 	// maxPtr set by minRecSizes
 	char *maxPtr = m_list + minRecSizes;
@@ -2357,7 +2459,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	if ( maxPtr > m_alloc + m_allocSize ) maxPtr = m_alloc + m_allocSize;
 
 	// convenience vars
-	long i ;
+	int32_t i ;
 
 	// bitch if too many lists
 	if ( numLists > MAX_RDB_FILES + 1 ) {
@@ -2374,7 +2476,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	char  *hiKeys  [ MAX_RDB_FILES + 1 ];
 	char  *e;
 	// set the ptrs that are non-empty
-	long n = 0;
+	int32_t n = 0;
 	// convenience ptr
 	for ( i = 0 ; i < numLists ; i++ ) {
 		// skip if empty
@@ -2411,13 +2513,13 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	if ( numLists <= 0 ) return true;
 
 	// debug msg
-	//log("merge start.n1=%lx n0=%llx", m_startKey.n1 , m_startKey.n0 );
-	//log("merge end  .n1=%lx n0=%llx", m_endKey.n1   , m_endKey.n0   );
+	//log("merge start.n1=%"XINT32" n0=%"XINT64"", m_startKey.n1 , m_startKey.n0 );
+	//log("merge end  .n1=%"XINT32" n0=%"XINT64"", m_endKey.n1   , m_endKey.n0   );
 
 	// point to most significant 4 bytes of "tmp"
 	char *minPtrLo ;
 	char *minPtrHi ;
-	short mini = -1; // short -> must be able to accomodate MAX_RDB_FILES!!
+	int16_t mini = -1; // int16_t -> must be able to accomodate MAX_RDB_FILES!!
 
 	// for saving state in case of key annihilation
 	//char *oldListPtr   = NULL;
@@ -2425,7 +2527,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	//char *oldLastPtrLo = NULL;
 
 	// we can have multiple negative keys stacked, so count 'em
-	//long  delDup = 0;
+	//int32_t  delDup = 0;
 	
 	// we may be able to set m_endKey higher than m_lastKey if
 	// we had a higher key, but it annihilated
@@ -2447,10 +2549,10 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	char *savedHighestKeyPtrHi = NULL;
 
 	// keep stats of dups removed
-	long dupCount = 0;
+	int32_t dupCount = 0;
 
 	// get truncation counts
-	long  prevCount = *prevCountPtr;
+	int32_t  prevCount = *prevCountPtr;
 	// and the key of the list we merged before this
 	//#ifdef ALLOW_SCALE
 	//char *prevHi = ((char *)&prevKey) + 6;
@@ -2468,10 +2570,10 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	char ss;
 
 #ifdef ALLOW_SCALE
-	unsigned long groupId ;
-	unsigned long myGroupId = g_hostdb.m_groupId;
-	//unsigned long groupMask = g_hostdb.m_groupMask;
-	//unsigned long long docid;
+	uint32_t groupId ;
+	uint32_t myGroupId = g_hostdb.m_groupId;
+	//uint32_t groupMask = g_hostdb.m_groupMask;
+	//uint64_t docid;
 	//char *pp;
 
 	bool skipFilter = false;
@@ -2489,8 +2591,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	// we only support indexdb right now
 	char *bstart;
 	char *bend;
-	long  need;
-	long  lastmini = -1;
+	int32_t  need;
+	int32_t  lastmini = -1;
 	char *bigPtrLo ;
 
 	// JAB: warning abatement
@@ -2577,11 +2679,11 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		// convenient ptrs
 		bigPtrLo = ptrs  [0];
 		//bigPtrHi = hiKeys[0];
-		// save for memcpy
+		// save for gbmemcpy
 		bstart = bigPtrLo;
 		bend   = ends[0];
-		// stop memcpy just before minRecSizes worth of keys are had
-		need = minRecSizes - (long)(m_listPtr - m_list);
+		// stop gbmemcpy just before minRecSizes worth of keys are had
+		need = minRecSizes - (int32_t)(m_listPtr - m_list);
 		if ( bend - bstart > need ) bend = bstart + need;
 		// . skip keys until >= minPtrLo/Hi
 		// . there should not be any negative keys in the root file
@@ -2590,7 +2692,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		// we never have to check the high 6 bytes gain because
 		// the termid is 48bits
 		while ( fcmp2low (bigPtrLo,minPtrLo) < 0 ) {
-			// doing the single memcpy below is not good enough,
+			// doing the single gbmemcpy below is not good enough,
 			// because we may have
 			// advance 6 or 12 more... NO
 			//if ( isHalfBitOn(bigPtrLo) ) bigPtrLo += 6 ;
@@ -2611,8 +2713,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		// we have to make sure to set last key ptrs in 
 		// case another list annihilates us, or overrides us
 		if ( bigPtrLo > bstart ) lastPtrLo = bigPtrLo - 6;
-		// now do the memcpy
-		memcpy ( m_listPtr , bstart , bigPtrLo - bstart );
+		// now do the gbmemcpy
+		gbmemcpy ( m_listPtr , bstart , bigPtrLo - bstart );
 		// does it matter this points into another list? YES!!
 		// but we are keeping the same termid, so ignore this
 		//m_listPtrHi  = m_listPtr + (bigPtrHi - bstart);
@@ -2629,7 +2731,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 			goto top;
 		}
 		// otherwise, remove him from array
-		for ( long i = 0 ; i < numLists - 1 ; i++ ) {
+		for ( int32_t i = 0 ; i < numLists - 1 ; i++ ) {
 			ptrs    [i] = ptrs    [i+1];
 			ends    [i] = ends    [i+1];
 			hiKeys  [i] = hiKeys  [i+1];
@@ -2663,8 +2765,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	if ( skipFilter ) goto skipfilter;
 
 	k = (char*)&key;
-	memcpy(k, minPtrLo, 6);
-	memcpy(&k[6], minPtrHi, 6);
+	gbmemcpy(k, minPtrLo, 6);
+	gbmemcpy(&k[6], minPtrHi, 6);
 	groupId = getGroupId ( rdbId , &key );
 	// filter out if does not belong in this group due to scaling servers
 	if ( groupId != myGroupId && doGroupMask ) { 
@@ -2675,7 +2777,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		else {
 			// this means corruption, don't allow it anymore!
 			log ( "db: Found invalid rec in db. (IndexMerge) "
-			      "group=%li myGroup=%li", groupId, myGroupId );
+			      "group=%"INT32" myGroup=%"INT32"", groupId, myGroupId );
 			//char *xx = NULL; *xx = 0;
 			if ( filtered ) *filtered = *filtered + 1;
 			goto skip;
@@ -2686,13 +2788,13 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 #endif
 	// store the 6 low bytes at m_listPtr
 	if ( m_ks == 12 ) {
-		*(long  *)  m_listPtr     = *(long  *)  minPtrLo;
-		*(short *)(&m_listPtr[4]) = *(short *)(&minPtrLo[4]) ;
+		*(int32_t  *)  m_listPtr     = *(int32_t  *)  minPtrLo;
+		*(int16_t *)(&m_listPtr[4]) = *(int16_t *)(&minPtrLo[4]) ;
 	}
 	// otherwise, store 10 for 16 byte keys
 	else {
-		*(long long *)  m_listPtr     = *(long long *)  minPtrLo;
-		*(short     *)(&m_listPtr[8]) = *(short     *)(&minPtrLo[8]) ;
+		*(int64_t *)  m_listPtr     = *(int64_t *)  minPtrLo;
+		*(int16_t     *)(&m_listPtr[8]) = *(int16_t     *)(&minPtrLo[8]) ;
 	}
 
 	// if we are high niceness, yield every 100k we merge
@@ -2712,13 +2814,13 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	// . if we are the first key in this list m_listPtrHi should be NULL
 	//   and we should always store the top 6 bytes
 	if ( ! m_listPtrHi ||
-	     ( *(long  *)  minPtrHi     != *(long  *)  m_listPtrHi   ||
-	       *(short *)(&minPtrHi[4]) != *(short *)(&m_listPtrHi[4])  )  ) {
+	     ( *(int32_t  *)  minPtrHi     != *(int32_t  *)  m_listPtrHi   ||
+	       *(int16_t *)(&minPtrHi[4]) != *(int16_t *)(&m_listPtrHi[4])  )  ) {
 		// store most significant 6 bytes
-		// *(short *)&m_listPtr[6] = *(short *) minPtrHi;
-		// *(long  *)&m_listPtr[8] = *(long  *)&minPtrHi[2] ;
-		*(short *)&m_listPtr[hks  ] = *(short *) minPtrHi;
-		*(long  *)&m_listPtr[hks+2] = *(long  *)&minPtrHi[2] ;
+		// *(int16_t *)&m_listPtr[6] = *(int16_t *) minPtrHi;
+		// *(int32_t  *)&m_listPtr[8] = *(int32_t  *)&minPtrHi[2] ;
+		*(int16_t *)&m_listPtr[hks  ] = *(int16_t *) minPtrHi;
+		*(int32_t  *)&m_listPtr[hks+2] = *(int32_t  *)&minPtrHi[2] ;
 		// turn off half bit
 		*m_listPtr &= 0xfd;
 		// point to the new hi key
@@ -2730,8 +2832,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		// . otherwise, we're the FIRST key so only reset if we do NOT
 		//   match the previous key of the last call to indexMerge_r()
 		//if ( m_listPtrHi ||
-		//     *(long  *) minPtrHi      != *(long  *)(prevHi)  ||
-		//     *(short *)(&minPtrHi[4]) != *(short *)(prevHi+4)  )
+		//     *(int32_t  *) minPtrHi      != *(int32_t  *)(prevHi)  ||
+		//     *(int16_t *)(&minPtrHi[4]) != *(int16_t *)(prevHi+4)  )
 		prevCount = 1;
 		// . save us as the last key ptr
 		// . m_listPtrHi should have our top 6 bytes so we don't need
@@ -2793,9 +2895,9 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	//
 
 	// debug msg
-	//log("removing list #%li", mini);
+	//log("removing list #%"INT32"", mini);
 	// otherwise, remove him from array
-	for ( long i = mini ; i < numLists - 1 ; i++ ) {
+	for ( int32_t i = mini ; i < numLists - 1 ; i++ ) {
 		ptrs    [i] = ptrs    [i+1];
 		ends    [i] = ends    [i+1];
 		hiKeys  [i] = hiKeys  [i+1];
@@ -2892,20 +2994,20 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 	// the last key we stored
 	//e = (char *)&m_lastKey;
 	e = m_lastKey;
-	//memcpy ( e     , lastPtrLo   , 6 );
-	//memcpy ( e + 6 , m_listPtrHi , 6 );
-	// why did we get rid of the above memcpy's()?
-	// *(long  *) e     = *(long  *) lastPtrLo;
-	// *(short *)(e+ 4) = *(short *)(lastPtrLo+4);
-	memcpy ( e , lastPtrLo , hks );
-	memcpy ( e + hks , m_listPtrHi , 6 );
-	// *(long  *)(e+ 6) = *(long  *) m_listPtrHi;  new one
-	// *(short *)(e+10) = *(short *)(m_listPtrHi+4); new one
+	//gbmemcpy ( e     , lastPtrLo   , 6 );
+	//gbmemcpy ( e + 6 , m_listPtrHi , 6 );
+	// why did we get rid of the above gbmemcpy's()?
+	// *(int32_t  *) e     = *(int32_t  *) lastPtrLo;
+	// *(int16_t *)(e+ 4) = *(int16_t *)(lastPtrLo+4);
+	gbmemcpy ( e , lastPtrLo , hks );
+	gbmemcpy ( e + hks , m_listPtrHi , 6 );
+	// *(int32_t  *)(e+ 6) = *(int32_t  *) m_listPtrHi;  new one
+	// *(int16_t *)(e+10) = *(int16_t *)(m_listPtrHi+4); new one
 	// sanity check
 	//key_t fk;
 	//char *f = (char *)&fk;
-	//memcpy ( f     , lastPtrLo   , 6 );
-	//memcpy ( f + 6 , m_listPtrHi , 6 );
+	//gbmemcpy ( f     , lastPtrLo   , 6 );
+	//gbmemcpy ( f + 6 , m_listPtrHi , 6 );
 	//if ( m_lastKey != fk ) { char *xx = NULL; *xx = 0; }
 
 	m_lastKeyIsValid = true;
@@ -2922,8 +3024,8 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		//e = (char *)&highestKey;
 		char highestKey[MAX_KEY_BYTES];
 		e = highestKey;
-		memcpy ( e       , highestKeyPtrLo , hks );
-		memcpy ( e + hks , highestKeyPtrHi , 6 );
+		gbmemcpy ( e       , highestKeyPtrLo , hks );
+		gbmemcpy ( e + hks , highestKeyPtrHi , 6 );
 		// the highestKey may have been annihilated, but it is still
 		// good for m_endKey, just not m_lastKey
 		//key_t endKey;
@@ -2937,7 +3039,7 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 		// if endkey is now negative we must have a dangling negative
 		// so make it positive (dangling = unmatched)
 		//if ( (*(char *)&endKey & 0x01) == 0x00 ) 
-		//	endKey += (unsigned long)1;
+		//	endKey += (uint32_t)1;
 		if ( KEYNEG(endKey) ) KEYADD(endKey,1,m_ks);
 		// be careful not to increase original endkey, though
 		//if ( endKey < m_endKey ) m_endKey = endKey;
@@ -2961,21 +3063,21 @@ bool RdbList::indexMerge_r ( RdbList **lists         ,
 ///////
 
 bool RdbList::posdbMerge_r ( RdbList **lists         ,  
-			     long      numLists      ,
+			     int32_t      numLists      ,
 			     char     *startKey      ,
 			     char     *endKey        ,
-			     long      minRecSizes   ,
+			     int32_t      minRecSizes   ,
 			     bool      removeNegKeys ,
 			     //char     *prevKey       ,
-			     //long     *prevCountPtr  ,
-			     //long      truncLimit    ,
-			     //long     *dupsRemoved   ,
+			     //int32_t     *prevCountPtr  ,
+			     //int32_t      truncLimit    ,
+			     //int32_t     *dupsRemoved   ,
 			     //char      rdbId         ,
-			     long     *filtered      ,
+			     int32_t     *filtered      ,
 			     bool      doGroupMask   ,
 			     bool      isRealMerge   ,
 			     //bool      useBigRootList ,
-			     long      niceness       ) {
+			     int32_t      niceness       ) {
 	// sanity
 	if ( m_ks != sizeof(key144_t) ) { char *xx=NULL;*xx=0; }
 	// how big is our half key? (half key size)
@@ -2984,12 +3086,12 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	if ( filtered ) *filtered = 0;
 	if ( numLists == 0 ) return true;
 #ifdef _MERGEDEBUG_
-	//log(LOG_INFO,"mdw: sk.n1=%lu sk.n0=%llu ek.n1=%lu ek.n0=%llu",
+	//log(LOG_INFO,"mdw: sk.n1=%"UINT32" sk.n0=%"UINT64" ek.n1=%"UINT32" ek.n0=%"UINT64"",
 	    //startKey.n1, startKey.n0, endKey.n1, endKey.n0 );
-	log(LOG_INFO,"mdw: sk.n1=%llx sk.n0=%llx ek.n1=%llx ek.n0=%llx",
+	log(LOG_INFO,"mdw: sk.n1=%"XINT64" sk.n0=%"XINT64" ek.n1=%"XINT64" ek.n0=%"XINT64"",
 	    KEY1(startKey,m_ks),KEY0(startKey),KEY1(endKey,m_ks),KEY0(endKey));
-	long omini = -1;
-	long fns[MAX_RDB_FILES+1];
+	int32_t omini = -1;
+	int32_t fns[MAX_RDB_FILES+1];
 #endif
 	// did they call prepareForMerge()?
 	if ( m_allocSize < m_mergeMinListSize ) {
@@ -3013,12 +3115,15 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	// . we don't want any positive recs to go un annhilated
 	// . but don't worry about this check if start and end keys are equal
 	//if ( m_startKey != m_endKey && (m_endKey.n0 & 0x01) == 0x00 )
-	if ( KEYCMP(m_startKey,m_endKey,m_ks)!=0 && KEYNEG(m_endKey) ) {
-		log(LOG_LOGIC,"db: rdblist: posdbMerge_r: Illegal endKey for "
-		    "merging");
-		// this happens when dumping datedb... wtf?
-		//char *xx=NULL;*xx=0;
-	}
+	// . MDW: this happens during the qainject1() qatest in qa.cpp that
+	//   deletes all the urls then does a dump of just negative keys.
+	//   so let's comment it out for now
+	// if ( KEYCMP(m_startKey,m_endKey,m_ks)!=0 && KEYNEG(m_endKey) ) {
+	// 	log(LOG_LOGIC,"db: rdblist: posdbMerge_r: Illegal endKey for "
+	// 	    "merging");
+	// 	// this happens when dumping datedb... wtf?
+	// 	//char *xx=NULL;*xx=0;
+	// }
 	// bail if nothing requested
 	if ( minRecSizes == 0 ) return true;
 
@@ -3030,12 +3135,12 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	if ( maxPtr > m_alloc + m_allocSize ) maxPtr = m_alloc + m_allocSize;
 
 	// debug note
-	if ( m_listSize )
+ 	if ( m_listSize && g_conf.m_logDebugBuild )
 		log(LOG_LOGIC,"db: storing recs in a non-empty list for merge"
 		    " probably from recall from negative key loss");
 
 	// convenience vars
-	long i ;
+	int32_t i ;
 
 	// bitch if too many lists
 	if ( numLists > MAX_RDB_FILES + 1 ) {
@@ -3053,7 +3158,7 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	char  *hiKeys  [ MAX_RDB_FILES + 1 ];
 	char  *loKeys  [ MAX_RDB_FILES + 1 ];
 	// set the ptrs that are non-empty
-	long n = 0;
+	int32_t n = 0;
 	// convenience ptr
 	for ( i = 0 ; i < numLists ; i++ ) {
 		// skip if empty
@@ -3090,14 +3195,14 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	if ( numLists <= 0 ) return true;
 
 	// debug msg
-	//log("merge start.n1=%lx n0=%llx", m_startKey.n1 , m_startKey.n0 );
-	//log("merge end  .n1=%lx n0=%llx", m_endKey.n1   , m_endKey.n0   );
+	//log("merge start.n1=%"XINT32" n0=%"XINT64"", m_startKey.n1 , m_startKey.n0 );
+	//log("merge end  .n1=%"XINT32" n0=%"XINT64"", m_endKey.n1   , m_endKey.n0   );
 
 	// point to most significant 4 bytes of "tmp"
 	char *minPtrBase ; // lowest  6 bytes
 	char *minPtrLo ;   // next    6 bytes
 	char *minPtrHi ;   // highest 6 bytes
-	short mini = -1; // short -> must be able to accomodate MAX_RDB_FILES!!
+	int16_t mini = -1; // int16_t -> must be able to accomodate MAX_RDB_FILES!!
 
 	// a flag that helps eliminate dangling negatives
 	//bool firstTime = true;
@@ -3109,7 +3214,7 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	//char *savedpp              = NULL;
 
 	// keep stats of dups removed
-	//long dupCount = 0;
+	//int32_t dupCount = 0;
 
 	char  uflag  = 0;
 	// this was disabled for a while, so uflag was always 0 because
@@ -3118,11 +3223,11 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	if ( isRealMerge ) uflag = 1;
 
 	char ss;
-	//long foo;
+	//int32_t foo;
 
 #ifdef ALLOW_SCALE
-	unsigned long groupId ;
-	unsigned long myGroupId = g_hostdb.m_groupId;
+	uint32_t groupId ;
+	uint32_t myGroupId = g_hostdb.m_groupId;
 	bool skipFilter = false;
 	// do not bother with the groupid filter if we are not scaling,
 	// this will save some time. this should usually be false.
@@ -3179,8 +3284,8 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	// if this is true, we do not need to call this groupid filter code
 	if ( skipFilter ) goto skipfilter;
 	k = (char*)&key;
-	memcpy(k, minPtrBase, 6);
-	memcpy(&k[6], minPtrHi, 6);
+	gbmemcpy(k, minPtrBase, 6);
+	gbmemcpy(&k[6], minPtrHi, 6);
 	groupId = getGroupId ( RDB_POSDB , &key );
 	// filter out if does not belong in this group due to scaling servers
 	if ( groupId != myGroupId && doGroupMask ) { 
@@ -3191,7 +3296,7 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 		else {
 			// this means corruption, don't allow it anymore!
 			log ( "db: Found invalid rec in db. (posdbMerge) "
-			      "group=%li myGroup=%li", groupId, myGroupId );
+			      "group=%"INT32" myGroup=%"INT32"", groupId, myGroupId );
 			//char *xx = NULL; *xx = 0;
 			if ( filtered ) *filtered = *filtered + 1;
 			goto skip;
@@ -3204,8 +3309,8 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	pp = m_listPtr;
 
 	// store lowest 6 bytes, the base
-	*(long  *)  m_listPtr     = *(long *)  minPtrBase;
-	*(short *)(&m_listPtr[4]) = *(short     *)(&minPtrBase[4]) ;
+	*(int32_t  *)  m_listPtr     = *(int32_t *)  minPtrBase;
+	*(int16_t *)(&m_listPtr[4]) = *(int16_t     *)(&minPtrBase[4]) ;
 
 	m_listPtr += 6;
 
@@ -3215,7 +3320,9 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 		else                yieldPoint = m_listPtr + 500000;
 		// only do this for low priority stuff now, i am concerned
 		// about long merge times during queries (MDW)
-		if ( niceness > 0 ) sched_yield();
+		// this is showing up in the profiler, not sure why
+		// so try taking out.
+		//if ( niceness > 0 ) sched_yield();
 	}
 
 #ifdef _MERGEDEBUG_
@@ -3225,8 +3332,8 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	// if hi 6 bytes different, MUST do the low
 	bool hiDiff;
 	if ( ! m_listPtrHi ||
-	     ( *(long  *) &minPtrHi[0]  != *(long  *)  m_listPtrHi   ||
-	       *(short *)(&minPtrHi[4]) != *(short *)(&m_listPtrHi[4])  ) )
+	     ( *(int32_t  *) &minPtrHi[0]  != *(int32_t  *)  m_listPtrHi   ||
+	       *(int16_t *)(&minPtrHi[4]) != *(int16_t *)(&m_listPtrHi[4])  ) )
 		hiDiff = true;
 	else
 		hiDiff = false;
@@ -3240,11 +3347,11 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	//   and we should always store the top 6 bytes
 	if ( hiDiff ||
 	     ! m_listPtrLo ||
-	     ( *(long  *)  minPtrLo     != *(long  *)  m_listPtrLo   ||
-	       *(short *)(&minPtrLo[4]) != *(short *)(&m_listPtrLo[4])  ) ) {
+	     ( *(int32_t  *)  minPtrLo     != *(int32_t  *)  m_listPtrLo   ||
+	       *(int16_t *)(&minPtrLo[4]) != *(int16_t *)(&m_listPtrLo[4])  ) ) {
 		// store most significant 6 bytes
-		*(short *)&m_listPtr[0] = *(short *) minPtrLo;
-		*(long  *)&m_listPtr[2] = *(long  *)&minPtrLo[2] ;
+		*(int16_t *)&m_listPtr[0] = *(int16_t *) minPtrLo;
+		*(int32_t  *)&m_listPtr[2] = *(int32_t  *)&minPtrLo[2] ;
 		// point to the new lo key
 		m_listPtrLo  = m_listPtr;
 		// skip that
@@ -3264,8 +3371,8 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	//   and we should always store the top 6 bytes
 	if ( hiDiff ) {
 		// store most significant 6 bytes
-		*(short *)&m_listPtr[0] = *(short *) minPtrHi;
-		*(long  *)&m_listPtr[2] = *(long  *)&minPtrHi[2] ;
+		*(int16_t *)&m_listPtr[0] = *(int16_t *) minPtrHi;
+		*(int32_t  *)&m_listPtr[2] = *(int32_t  *)&minPtrHi[2] ;
 		// point to the new hi key
 		m_listPtrHi  = m_listPtr;
 		// skip that
@@ -3319,9 +3426,9 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 	//
 
 	// debug msg
-	//log("removing list #%li", mini);
+	//log("removing list #%"INT32"", mini);
 	// otherwise, remove him from array
-	for ( long i = mini ; i < numLists - 1 ; i++ ) {
+	for ( int32_t i = mini ; i < numLists - 1 ; i++ ) {
 		ptrs    [i] = ptrs    [i+1];
 		ends    [i] = ends    [i+1];
 		hiKeys  [i] = hiKeys  [i+1];
@@ -3420,13 +3527,13 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 		// the last key we stored
 		char *e = m_lastKey;
 		// record the last key we added in m_lastKey
-		memcpy ( e , pp , 6 );
+		gbmemcpy ( e , pp , 6 );
 		// take off compression bits
 		*e &= 0xf9;
 		e += 6;
-		memcpy ( e , m_listPtrLo , 6 );
+		gbmemcpy ( e , m_listPtrLo , 6 );
 		e += 6;
-		memcpy ( e , m_listPtrHi , 6 );
+		gbmemcpy ( e , m_listPtrHi , 6 );
 		// validate it now
 		m_lastKeyIsValid = true;
 	}
@@ -3442,14 +3549,14 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 
 	// save original end key
 	char orig[MAX_KEY_BYTES];
-	memcpy ( orig , m_endKey , m_ks );
+	gbmemcpy ( orig , m_endKey , m_ks );
 
 	// . we only need to shrink the endKey if we fill up our list and
 	//   there's still keys under m_endKey left over to merge
 	// . if no keys remain to merge, then don't decrease m_endKey
 	// . i don't want the endKey decreased unnecessarily because
 	//   it means there's no recs up to the endKey
-	memcpy ( m_endKey , m_lastKey , m_ks );
+	gbmemcpy ( m_endKey , m_lastKey , m_ks );
 	// if endkey is now negative we must have a dangling negative
 	// so make it positive (dangling = unmatched)
 	if ( KEYNEG(m_endKey) ) KEYADD(m_endKey,1,m_ks);
@@ -3459,3 +3566,61 @@ bool RdbList::posdbMerge_r ( RdbList **lists         ,
 
 	return true;
 }
+
+void RdbList::setFromSafeBuf ( SafeBuf *sb , char rdbId ) {
+
+	// free and NULLify any old m_list we had to make room for our new list
+	freeList();
+
+	// set this first since others depend on it
+	m_ks = getKeySizeFromRdbId ( rdbId );
+
+	// set our list parms
+	m_list          = sb->getBufStart();
+	m_listSize      = sb->length();
+	m_alloc         = sb->getBufStart();
+	m_allocSize     = sb->getCapacity();
+	m_listEnd       = m_list + m_listSize;
+
+	KEYMIN(m_startKey,m_ks);
+	KEYMAX(m_endKey  ,m_ks);
+
+	m_fixedDataSize = getDataSizeFromRdbId ( rdbId );
+
+	m_ownData       = false;//ownData;
+	m_useHalfKeys   = false;//useHalfKeys;
+
+	// use this call now to set m_listPtr and m_listPtrHi based on m_list
+	resetListPtr();
+
+}
+
+void RdbList::setFromPtr ( char *p , int32_t psize , char rdbId ) {
+
+	// free and NULLify any old m_list we had to make room for our new list
+	freeList();
+
+	// set this first since others depend on it
+	m_ks = getKeySizeFromRdbId ( rdbId );
+
+	// set our list parms
+	m_list          = p;
+	m_listSize      = psize;
+	m_alloc         = p;
+	m_allocSize     = psize;
+	m_listEnd       = m_list + m_listSize;
+
+	KEYMIN(m_startKey,m_ks);
+	KEYMAX(m_endKey  ,m_ks);
+
+	m_fixedDataSize = getDataSizeFromRdbId ( rdbId );
+
+	m_ownData       = false;//ownData;
+	m_useHalfKeys   = false;//useHalfKeys;
+
+	// use this call now to set m_listPtr and m_listPtrHi based on m_list
+	resetListPtr();
+
+}
+
+

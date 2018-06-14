@@ -9,9 +9,9 @@
 
 // record for unified language/country hash table
 typedef union catcountryrec_t {
-	long lval;
+	int32_t lval;
 	struct {
-		unsigned short country;
+		uint16_t country;
 		uint8_t lang;
 	} sval;
 } catcountryrec_t;
@@ -296,10 +296,10 @@ uint8_t getCountryId ( char *cc ) {
 		// hash them up
 		ht.set ( 4 , 1 , -1,buf,2000,false,MAX_NICENESS,"ctryids");
 		// now add in all the country codes
-		long n = (long) sizeof(s_countryCode) / sizeof(char *); 
-		for ( long i = 0 ; i < n ; i++ ) {
+		int32_t n = (int32_t) sizeof(s_countryCode) / sizeof(char *); 
+		for ( int32_t i = 0 ; i < n ; i++ ) {
 			char *s    = (char *)s_countryCode[i];
-			//long  slen = gbstrlen ( s );
+			//int32_t  slen = gbstrlen ( s );
 			// sanity check
 			if ( !s[0] || !s[1] || s[2]) { char *xx=NULL;*xx=0; }
 			// map it to a 4 byte key
@@ -320,7 +320,7 @@ uint8_t getCountryId ( char *cc ) {
 	tmp[1]=to_lower_a(cc[1]);
 	tmp[2]=0;
 	tmp[3]=0;
-	long slot = ht.getSlot ( tmp );
+	int32_t slot = ht.getSlot ( tmp );
 	if ( slot < 0 ) return 0;
 	void *val = ht.getValueFromSlot ( slot );
 	return *(uint8_t *)val ;
@@ -1101,7 +1101,7 @@ CountryCode::~CountryCode() {
 
 // this is initializing, not resetting - mdw
 void CountryCode::init(void) {
-	unsigned short idx;
+	uint16_t idx;
 	if(m_init) {
 		m_abbrToName.reset();
 		m_abbrToIndex.reset();
@@ -1144,59 +1144,61 @@ int CountryCode::fillRegexTable(void) {
 		switch(regcomp(&s_countryRegex[x], s_countryRegexSource[x],
 					REG_EXTENDED | REG_ICASE | REG_NEWLINE | REG_NOSUB)) {
 			case REG_BADBR:
-				fprintf(stderr, "init: Country regex: %d: Invalid use of back reference operator.", x);
+				log( "init: Country regex: %d: Invalid use of back reference operator.", x);
 				break;
 
 			case REG_BADPAT:
-				fprintf(stderr, "init: Country regex: %d: Invalid use of pattern operators such as group or list.", x);
+				log( "init: Country regex: %d: Invalid use of pattern operators such as group or list.", x);
 				break;
 
 			case REG_BADRPT:
-				fprintf(stderr, "init: Country regex: %d: Invalid use of repetition operators.", x);
+				log( "init: Country regex: %d: Invalid use of repetition operators.", x);
 				break;
 
 			case REG_EBRACE:
-				fprintf(stderr, "init: Country regex: %d: Un-matched brace interval operators.", x);
+				log( "init: Country regex: %d: Un-matched brace interval operators.", x);
 				break;
 
 			case REG_EBRACK:
-				fprintf(stderr, "init: Country regex: %d: Un-matched bracket list operators.", x);
+				log( "init: Country regex: %d: Un-matched bracket list operators.", x);
 				break;
 
 			case REG_ECOLLATE:
-				fprintf(stderr, "init: Country regex: %d: Invalid collating element.", x);
+				log( "init: Country regex: %d: Invalid collating element.", x);
 				break;
 
 			case REG_ECTYPE:
-				fprintf(stderr, "init: Country regex: %d: Unknown character class name.", x);
+				log( "init: Country regex: %d: Unknown character class name.", x);
 				break;
 
-			case REG_EEND:
-				fprintf(stderr, "init: Country regex: %d: Non specific error.", x);
-				break;
+				// cygwin doesn't like this one
+			// case REG_EEND:
+			// 	log( "init: Country regex: %d: Non specific error.", x);
+			// 	break;
 
 			case REG_EESCAPE:
-				fprintf(stderr, "init: Country regex: %d: Trailing backslash.", x);
+				log( "init: Country regex: %d: Trailing backslash.", x);
 				break;
 
 			case REG_EPAREN:
-				fprintf(stderr, "init: Country regex: %d: Un-matched parenthesis group operators.", x);
+				log( "init: Country regex: %d: Un-matched parenthesis group operators.", x);
 				break;
 
 			case REG_ERANGE:
-				fprintf(stderr, "init: Country regex: %d: Invalid use of the range operator.", x);
+				log( "init: Country regex: %d: Invalid use of the range operator.", x);
 				break;
 
-			case REG_ESIZE:
-				fprintf(stderr, "init: Country regex: %d: Compiled regular expression requires a pattern buffer larger than 64Kb.", x);
-				break;
+				// cygwin doesn't like this one
+			// case REG_ESIZE:
+			// 	log( "init: Country regex: %d: Compiled regular expression requires a pattern buffer larger than 64Kb.", x);
+			// 	break;
 
 			case REG_ESPACE:
-				fprintf(stderr, "init: Country regex: %d: The regex routines ran out of memory.", x);
+				log( "init: Country regex: %d: The regex routines ran out of memory.", x);
 				break;
 
 			case REG_ESUBREG:
-				fprintf(stderr, "init: Country regex: %d: Invalid back reference to a subexpression.", x);
+				log( "init: Country regex: %d: Invalid back reference to a subexpression.", x);
 				break;
 		}
 	}
@@ -1217,7 +1219,7 @@ uint8_t s_getLangIdxFromDMOZ(char *topic, int len) {
 	int limit = len;
 	if(limit > 2047) limit = 2047;
 	memset(buf, 0, 2048);
-	memcpy(buf, topic, limit);
+	gbmemcpy(buf, topic, limit);
 	if(gbstrlen(buf) < 1) return(0);
 	for(int x = 2; x < langTagalog; x++) {
 		if(x == 5) continue;
@@ -1233,25 +1235,25 @@ int CountryCode::createHashTable(void) {
 
 	char tmpbuf[2048];
 	HashTable ht;
-	unsigned long long entries = 0UL;
-	long catid;
-	long numcats = g_categories->m_numCats;
+	uint64_t entries = 0UL;
+	int32_t catid;
+	int32_t numcats = g_categories->m_numCats;
 	catcountryrec_t ccr;
 	SafeBuf sb(tmpbuf, 2048);
 
-	fprintf(stderr, "cat: Creating category country/language table.\n");
+	log( "cat: Creating category country/language table.\n");
 
-	if(!ht.set(2)) {
-		fprintf(stderr, "cat: Could not allocate memory for table.\n");
+	if(!ht.set(2,NULL,0,"ctrycode")) {
+		log( "cat: Could not allocate memory for table.\n");
 		return(0);
 	}
-	for(long idx = 0; idx < numcats; idx++) {
+	for(int32_t idx = 0; idx < numcats; idx++) {
 		catid = g_categories->m_cats[idx].m_catid;
 		sb.reset();
 		g_categories->printPathFromId(&sb, catid, true);
 		if(!sb.getBufStart()) continue;
 		if(!(numcats % 1000))
-			fprintf(stderr, "init: %ld/%ld Generated %llu so far...\n",
+			log( "init: %"INT32"/%"INT32" Generated %"UINT64" so far...\n",
 					numcats,
 					idx,
 					entries);
@@ -1263,15 +1265,15 @@ int CountryCode::createHashTable(void) {
 			char *xx = NULL; *xx = 0;
 		}
 		if(!ht.addKey(catid, ccr.lval)) {
-			fprintf(stderr, "init: Could not add %ld (%ld)\n", catid, ccr.lval);
+			log( "init: Could not add %"INT32" (%"INT32")\n", catid, ccr.lval);
 			continue;
 		}
 		entries++;
 	}
 
 	ht.save(g_hostdb.m_dir, "catcountry.dat");
-	fprintf(stderr, "Added %llu country entries from DMOZ to %s/catcountry.dat.\n", entries,g_hostdb.m_dir);
-	fprintf(stderr, "Slots %ld, Used Slots %ld.\n", ht.getNumSlots(), ht.getNumSlotsUsed());
+	log( "Added %"UINT64" country entries from DMOZ to %s/catcountry.dat.\n", entries,g_hostdb.m_dir);
+	log( "Slots %"INT32", Used Slots %"INT32".\n", ht.getNumSlots(), ht.getNumSlotsUsed());
 
 	freeRegexTable();
 	return(1);
@@ -1281,30 +1283,35 @@ bool CountryCode::loadHashTable(void) {
 	init();
 	if(!m_init) return(false);
 	s_catToCountry.reset();
+	s_catToCountry.setLabel("ctrycode");
 	return(s_catToCountry.load(g_hostdb.m_dir, "catcountry.dat"));
+}
+
+void CountryCode::reset ( ) {
+	s_catToCountry.reset();
 }
 
 int CountryCode::getNumCodes(void) {
 	return(s_numCountryCodes);
 }
 
-unsigned short CountryCode::getCountryFromDMOZ(long catid) {
+uint16_t CountryCode::getCountryFromDMOZ(int32_t catid) {
 	if(!m_init) return(0);
 	catcountryrec_t ccr;
 	ccr.lval = 0L;
 	if(s_catToCountry.getNumSlotsUsed() < 1) return(0);
-	long slot = s_catToCountry.getSlot((long)catid);
+	int32_t slot = s_catToCountry.getSlot((int32_t)catid);
 	if(slot < 0) return(0);
 	ccr.lval = s_catToCountry.getValueFromSlot(slot);
 	return(ccr.sval.country);
 }
 
-uint8_t CountryCode::getLanguageFromDMOZ(long catid) {
+uint8_t CountryCode::getLanguageFromDMOZ(int32_t catid) {
 	if(!m_init) return(0);
 	catcountryrec_t ccr;
 	ccr.lval = 0L;
 	if(s_catToCountry.getNumSlotsUsed() < 1) return(0);
-	long slot = s_catToCountry.getSlot((long)catid);
+	int32_t slot = s_catToCountry.getSlot((int32_t)catid);
 	if(slot < 0) return(0);
 	ccr.lval = s_catToCountry.getValueFromSlot(slot);
 	return(ccr.sval.lang);
@@ -1314,9 +1321,9 @@ uint8_t CountryCode::getLanguageFromDMOZ(long catid) {
 int CountryCode::lookupCountryFromDMOZTopic(const char *catname, int len) {
 	if(len < 1) return(0);
 	if(!s_countryRegex) return(0);
-	char buf[2048];
+	char buf[2049];
 	if(len > 2047) len = 2047;
-	memcpy(buf, catname, len);
+	gbmemcpy(buf, catname, len);
 	buf[len+1] = 0;
 	if(gbstrlen(buf) < 1) return(0);
 	for(int x = 1; x < s_numCountryCodes; x++)
@@ -1337,29 +1344,29 @@ const char *CountryCode::getName(int index) {
 
 int CountryCode::getIndexOfAbbr(const char *abbr) {
 	if(!m_init) return(0);
-	unsigned short idx;
+	uint16_t idx;
 	if(!abbr) return(0);
 	idx = abbr[0];
 	idx = idx << 8;
 	idx |= abbr[1];
-	long slot = m_abbrToIndex.getSlot(idx);
+	int32_t slot = m_abbrToIndex.getSlot(idx);
 	if(slot < 0) return(0);
 	return(m_abbrToIndex.getValueFromSlot(slot));
 }
 
-long CountryCode::getNumEntries(void) {
+int32_t CountryCode::getNumEntries(void) {
 	if(!m_init) return(0);
 	return(s_catToCountry.getNumSlotsUsed());
 }
 
 void CountryCode::debugDumpNumbers(void) {
-	long slot;
+	int32_t slot;
 	catcountryrec_t ccr;
 	for(slot = 0; slot < s_catToCountry.getNumSlotsUsed(); slot++) {
 		ccr.lval = 0L;
 		ccr.lval = s_catToCountry.getValueFromSlot(slot);
 		if(ccr.lval)
-			fprintf(stderr, "Slot %ld has lang %d, country %d (%ld)\n",
+			log( "Slot %"INT32" has lang %d, country %d (%"INT32")\n",
 					slot, ccr.sval.lang, ccr.sval.country, ccr.lval);
 	}
 }

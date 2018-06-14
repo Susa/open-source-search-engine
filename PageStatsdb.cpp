@@ -1,11 +1,11 @@
 #include "gb-include.h"
 
 #define X_DISPLAY_MISSING 1
-#include <plotter.h>
+//#include <plotter.h>
 //#include <fstream.h>
 #include <math.h>
 
-#include "CollectionRec.h"
+//#include "CollectionRec.h"
 #include "Pages.h"
 #include "Statsdb.h"
 #include "Hostdb.h"
@@ -23,8 +23,8 @@ class StateStatsdb {
 	// Original timestamp request data
  	time_t m_startDate;
 	time_t m_endDate;
-	long   m_datePeriod;
-	long   m_dateUnits;
+	int32_t   m_datePeriod;
+	int32_t   m_dateUnits;
 	// Timestamp data modified for the request
  	time_t m_startDateR;
 	time_t m_endDateR;
@@ -32,10 +32,10 @@ class StateStatsdb {
 	// For the auto-update AJAX script
 	bool m_autoUpdate;
 
-	long m_samples;
+	int32_t m_samples;
 
 	// Misc. request data
-	long m_hostId;
+	int32_t m_hostId;
 
 	// Request & build flags
 	bool m_dateLimit;
@@ -43,18 +43,27 @@ class StateStatsdb {
 	bool m_cacti;
 	bool m_now;
 
-	long m_niceness;
+	int32_t m_niceness;
 };
 
-static time_t genDate( char *date, long dateLen ) ;
+static time_t genDate( char *date, int32_t dateLen ) ;
 static void   sendReply ( void *st ) ;
+
+static bool s_graphInUse = false;
 
 // . returns false if blocked, otherwise true
 // . sets g_errno on error
-bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
+bool sendPageGraph ( TcpSocket *s, HttpRequest *r ) {
+
+	if ( s_graphInUse ) {
+		char *msg = "stats graph calculating for another user. "
+			"Try again later.";
+		g_httpServer.sendErrorReply(s,500,msg);
+		return true;
+	}
 	
 	char *cgi;
-	long cgiLen;
+	int32_t cgiLen;
 	StateStatsdb *st;
 	try { st = new StateStatsdb; }
 	catch ( ... ) {
@@ -67,7 +76,8 @@ bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
 	st->m_niceness     = MAX_NICENESS;
 
 	st->m_socket  	   = s;
-	st->m_request 	   = *r;
+	//st->m_request 	   = *r;
+	st->m_request.copy ( r );
 
 	// hostId must be one of the following:
 	// 	 0-n - a valid hostId
@@ -96,7 +106,7 @@ bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
 	st->m_dateCustom   = (bool)r->getLong( "custom",  0 );
 	// default to 10 hours, i would do 1 day except that there are
 	// some bugs that mess up the display a lot when i do that
-	st->m_datePeriod   = r->getLong( "date_period" , 36000 );
+	st->m_datePeriod   = r->getLong( "date_period" , 300 );//36000 );
 	st->m_dateUnits    = r->getLong( "date_units"  , 1 );//SECS_PER_MIN
 	st->m_now	   = (bool)r->getLong( "date_now"   , 1 );
 	st->m_autoUpdate   = (bool)r->getLong( "auto_update" , 0 );
@@ -109,7 +119,7 @@ bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
 	//	st->m_columns = DEF_COLUMNS;
 
 	if ( st->m_now )
-		st->m_startDate = (time_t)getTimeGlobal();
+		st->m_startDate = (time_t)getTimeGlobalNoCore();
 
 	st->m_startDateR = st->m_startDate;
 	st->m_endDateR   = st->m_endDate; 
@@ -120,14 +130,18 @@ bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
 		st->m_endDate = st->m_endDateR;
 	}
 
-
+	//
+	// this is no longer a gif, but an html graph in g_statsdb.m_sb
+	//
 	if ( ! g_statsdb.makeGIF ( st->m_endDateR   ,
 				   st->m_startDateR ,
 				   st->m_samples ,
 				   &st->m_sb2 ,
 				   st               ,
-				   sendReply        ) )
+				   sendReply        ) ) {
+		s_graphInUse = true;
 		return false;
+	}
 
 	// if we didn't block call it ourselves directly
 	sendReply ( st );
@@ -135,9 +149,63 @@ bool sendPageStatsdb ( TcpSocket *s, HttpRequest *r ) {
 	return true;
 }
 
+void genStatsDataset(SafeBuf *buf, StateStatsdb *st) {
+	if ( ! g_conf.m_useStatsdb ) {
+		buf->safePrintf("{\"error\":\"statsdb disabled\"}\n" );
+        return;
+    }
+    
+
+}
+
 static void writeControls ( SafeBuf *buf, StateStatsdb *st ) ;
+void genStatsGraphTable(SafeBuf *buf, StateStatsdb *st) {
+	if ( ! g_conf.m_useStatsdb ) 
+		buf->safePrintf("<font color=red><b>Statsdb disabled. "
+			       "Turn on in the master controls.</b>"
+			       "</font>\n" );
+
+
+	buf->safePrintf("<table %s>\n",TABLE_STYLE);
+
+	buf->safePrintf("<tr><td bgcolor=#%s>"
+		       "<center>",LIGHT_BLUE);
+
+	/////////////////////////
+	//
+	// insert the div graph here
+	//
+	/////////////////////////
+	buf->cat ( g_statsdb.m_gw );
+
+	// purge it
+	g_statsdb.m_gw.purge();
+	g_statsdb.m_dupTable.reset();
+
+	//"<img src=\"/stats%"INT32".gif\" height=%"INT32" width=%"INT32" "
+	//"border=\"0px\">"
+	//st->m_hostId,
+	//g_statsdb.getImgHeight(),
+	//g_statsdb.getImgWidth());
+
+	buf->safePrintf("</center>"
+		       //"class=\"statsdb_image\">"
+		       "</td></tr>\n");
+
+	// the map key
+	buf->safePrintf("<tr><td>");
+	buf->cat ( st->m_sb2 );
+	buf->safePrintf("</td></tr>\n");
+
+	buf->safePrintf( "</table>\n" );
+}
+
+
+
 
 void sendReply ( void *state ) {
+
+	s_graphInUse = false;
 
 	StateStatsdb *st = (StateStatsdb *)state;
 
@@ -149,8 +217,21 @@ void sendReply ( void *state ) {
 
 	TcpSocket *s = st->m_socket;
 
-	SafeBuf buf( 1024*32 );
-	SafeBuf tmpBuf( 1024 );
+	if(st->m_request.getLong("json", 0)) {
+        //xxxxxxxxxxxxxxxxxxxxxxxxx
+    }
+
+	if(st->m_request.getLong("justgraph", 0)) {
+		SafeBuf buf( 1024*32 , "tmpbuf0" );
+		genStatsGraphTable(&buf, st);
+		g_statsdb.m_gw.purge();
+		g_statsdb.m_dupTable.reset();
+		g_httpServer.sendDynamicPage ( s, buf.getBufStart(), buf.length() ); 
+		return;
+	}
+
+	SafeBuf buf( 1024*32 , "tmpbuf0" );
+	SafeBuf tmpBuf( 1024 , "tmpbuf1" );
 
 	//
 	// take these out until we need them!
@@ -177,7 +258,7 @@ void sendReply ( void *state ) {
 
 	// make the query string
 	char qs[1024];
-	sprintf(qs,"&date_period=%li&date_units=%li&samples=%li",
+	sprintf(qs,"&date_period=%"INT32"&date_units=%"INT32"&samples=%"INT32"",
 		st->m_datePeriod,
 		st->m_dateUnits,
 		st->m_samples);
@@ -191,9 +272,6 @@ void sendReply ( void *state ) {
 	//g_pages.printAdminTop2 ( &buf , st->m_socket , &st->m_request, NULL ,
 	//			 tmpBuf.getBufStart(), tmpBuf.length() ); 
 
-	// write the controls section of the page
-	writeControls( &buf, st );
-
 	// Debug print of CGI parameters and errors
 	char startTimeStr[30];
 	char endTimeStr[30];
@@ -201,34 +279,20 @@ void sendReply ( void *state ) {
 	strncpy( startTimeStr, ctime( &st->m_startDate ), 30 );
 	strncpy( endTimeStr, ctime( &st->m_endDate ), 30 );
 
-	buf.safePrintf("<center>\n");
+	buf.safePrintf(
+		       "<b>Graph of various query performance statistics.</b>"
+		       "<br>"
+		       "<br>"
+		       );
 
-	if ( ! g_conf.m_useStatsdb ) 
-		buf.safePrintf("<font color=red><b>Statsdb disabled. "
-			       "Turn on in the master controls.</b>"
-			       "</font>\n" );
 
-	buf.safePrintf("<table cellpadding=10 border=0>\n");
+	buf.safePrintf("<center id=\"graph-container\">\n");
 
-	buf.safePrintf("<tr><td>"
-		       "<center>"
-		       "<img src=\"/stats%li.gif\" height=%li width=%li "
-		       "border=\"0px\">"
-		       "</center>"
-		       //"class=\"statsdb_image\">"
-		       "</td></tr>\n",
-		       st->m_hostId,
-		       g_statsdb.getImgHeight(),
-		       g_statsdb.getImgWidth());
-
-	// the map key
-	buf.safePrintf("<tr><td>");
-	buf.cat ( st->m_sb2 );
-	buf.safePrintf("</td></tr>\n");
-
-	buf.safePrintf( "</table>\n" );
-
+	genStatsGraphTable(&buf, st);
 	buf.safePrintf("</center>");
+
+	// write the controls section of the page
+	writeControls( &buf, st );
 
 	// print the bottom of the page
 	g_pages.printAdminBottom2( &buf );
@@ -263,7 +327,7 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 		"<tr>"
 		"<td>Moving Average Samples</td>"
 		"<td>"
-		"<input type=text name=samples length=20 value=\"%li\">"
+		"<input type=text name=samples length=20 value=\"%"INT32"\">"
 		"</td>"
 		"</tr>"
 		"<tr class=\"show\" id=\"e_date_start\">\n"
@@ -284,15 +348,15 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 		"<button type=\"reset\" name=\"strigger\" "
 		"id=\"s_date_trigger\">...</button>\n"
 		"<script type=\"text/javascript\">\n"
-		"Calendar.setup({\n"
-		"inputField     :    \"s_date_field\"	,\n"
-		"ifFormat       :    \"%%m/%%d/%%Y %%H:%%M\"	,\n"
-		"showsTime      :    true		,\n"
-		"button         :    \"s_date_trigger\"	,\n"
-		"singleClick    :    false		,\n"
-		"step           :    1			,\n"
-		"timeFormat     :    \"24\"\n"
-		"});\n"
+		// "Calendar.setup({\n"
+		// "inputField     :    \"s_date_field\"	,\n"
+		// "ifFormat       :    \"%%m/%%d/%%Y %%H:%%M\"	,\n"
+		// "showsTime      :    true		,\n"
+		// "button         :    \"s_date_trigger\"	,\n"
+		// "singleClick    :    false		,\n"
+		// "step           :    1			,\n"
+		// "timeFormat     :    \"24\"\n"
+		// "});\n"
 		"</script>\n"
 		"</td>\n"
 		"</tr>\n"
@@ -377,16 +441,75 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 	buf->safePrintf (
 		"<button type=\"reset\" name=\"etrigger\" "
 		"id=\"e_date_trigger\">...</button>\n"
+        "<style>"
+        ".hidden {display:none;}"
+        "</style>"
 		"<script type=\"text/javascript\">\n"
-		"Calendar.setup({\n"
-		"inputField     :    \"e_date_field\"	,\n"
-		"ifFormat       :    \"%%m/%%d/%%Y %%H:%%M\"	,\n"
-		"showsTime      :    true		,\n"
-		"button         :    \"e_date_trigger\"	,\n"
-		"singleClick    :    false		,\n"
-		"step           :    1			,\n"
-		"timeFormat     :    \"24\"\n"
-		"});\n"
+		// "Calendar.setup({\n"
+		// "inputField     :    \"e_date_field\"	,\n"
+		// "ifFormat       :    \"%%m/%%d/%%Y %%H:%%M\"	,\n"
+		// "showsTime      :    true		,\n"
+		// "button         :    \"e_date_trigger\"	,\n"
+		// "singleClick    :    false		,\n"
+		// "step           :    1			,\n"
+		// "timeFormat     :    \"24\"\n"
+		// "});\n"
+		"function hideColor(val, checked) {"
+		"  var elmsToToggle = document.querySelectorAll('.color-'+ val);"
+		"  for(var i = 0; i < elmsToToggle.length; i++) {"
+        "    if(checked) {"
+        "      elmsToToggle[i].className = elmsToToggle[i].className.replace(' hidden', '');"
+        "    } else {"
+        "      elmsToToggle[i].className = elmsToToggle[i].className + ' hidden';"
+        "    } "
+        "  } "
+		"}"
+		"function toggleVisible(ev) {"
+		"  var val = ev.target.value;"
+		"  var checked = ev.target.checked;"
+		"  window.localStorage.setItem(val, checked);"
+		"  console.log('toggling', val, checked , 	  window.localStorage.getItem(val));"
+		"  hideColor(val, checked)"
+		"}"
+
+		"function initToggles() {"
+		"  var graphToggles = document.querySelectorAll('.graph-toggles');"
+		"  for(var i = 0; i < graphToggles.length; i++) {"
+		"    graphToggles[i].addEventListener('click', toggleVisible);"
+		"    if(window.localStorage.getItem(graphToggles[i].value) == 'false') {"
+		"      graphToggles[i].checked = false;"
+		"      hideColor(graphToggles[i].value, false);"
+		"    } else {"
+		"      graphToggles[i].checked = true;"
+		"    }"
+		"    console.log('xxxx', graphToggles[i].value, 'yyy', window.localStorage.getItem(graphToggles[i].value));"
+		"  }"
+		"} "
+		"function callAjax(url, callback) { "
+		"    var xmlhttp;"
+		"    xmlhttp = new XMLHttpRequest();"
+		"    xmlhttp.onreadystatechange = function() {"
+		"        if (xmlhttp.readyState == 4 && xmlhttp.status == 200) {"
+		"            callback(xmlhttp.responseText);"
+		"        } "
+		"    }; "
+		"    xmlhttp.open('GET', url, true);"
+		"    xmlhttp.send();"
+		"} "
+		"initToggles();"
+		
+		"function refreshGraph() {"
+		"  var autoUpdate = document.querySelector('#auto_update_trigger');"
+		"  if(!autoUpdate.checked) return;"
+		"  callAjax(document.location + '&justgraph=1&dontlog=1', function(elm) {"
+		"    var gc = document.querySelector('#graph-container');"
+		"    gc.innerHTML = elm;"
+		"    initToggles();"
+		"  });"
+		"}"
+		"setInterval(refreshGraph, 2000);"
+
+
 		"</script>\n"
 		"</td>\n"
 		"</tr>\n"
@@ -421,6 +544,34 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 		"</tr>\n");
 	*/
 
+	buf->safePrintf(
+		"<tr class=\"show\" id=\"e_auto_trigger\">\n"
+		"<td colspan=\"2\">\n"
+		"<input type=\"checkbox\" name=\"auto_update\" "
+		"id=\"auto_update_trigger\" value=\"1\" "
+		//"onclick=\"javascript:st_auto_update()\""
+	);
+
+	if ( st->m_autoUpdate ) buf->safePrintf( " checked" );
+
+	buf->safePrintf (
+		" /> Auto Update Stats\n"
+	);
+	
+	buf->safePrintf (
+		"</td>\n"
+		"</tr>\n"
+		"</table>\n"
+		"<input type=\"hidden\" name=\"genstats\" value=\"1\" />\n"
+	);
+
+	g_pages.printFormData( buf, st->m_socket, &st->m_request );
+
+	buf->safePrintf (
+		"<input type=\"submit\" name=\"action\" value=\"submit\" />"
+		"</div>\n</form>\n</div>\n</div>\n"
+	);
+
 	// This checkbox pulls the current time from the server,
 	// and uses it for the request. Can only use the time
 	// period dialog when this is selected.
@@ -454,10 +605,10 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 	if ( st->m_hostId == -1 ) buf->safePrintf ( " selected " );
 	buf->safePrintf ( ">Sample</option>\n");
 
-	for (long i = 0; i < g_hostdb.getNumHosts(); i++) {
-		buf->safePrintf ( "<option value=\"%li\"", i );
+	for (int32_t i = 0; i < g_hostdb.getNumHosts(); i++) {
+		buf->safePrintf ( "<option value=\"%"INT32"\"", i );
 		if ( st->m_hostId == i ) buf->safePrintf ( " selected " );
-		buf->safePrintf ( ">Host %li</option>\n", i );
+		buf->safePrintf ( ">Host %"INT32"</option>\n", i );
 	}
 
 	// Print the statistic selector.
@@ -622,37 +773,12 @@ void writeControls ( SafeBuf *buf, StateStatsdb *st ) {
 	//	buf->safePrintf( ">%u</option>\n", i );
 	//}
 
-	buf->safePrintf(
-		"<tr class=\"show\" id=\"e_auto_trigger\">\n"
-		"<td colspan=\"2\">\n"
-		"<input type=\"checkbox\" name=\"auto_update\" "
-		"id=\"auto_update_trigger\" value=\"1\" "
-		"onclick=\"javascript:st_auto_update()\""
-	);
-
-	if ( st->m_autoUpdate ) buf->safePrintf( " checked" );
-
-	buf->safePrintf (
-		" /> Auto Update Stats\n"
-	);
-	
-	buf->safePrintf (
-		"</td>\n"
-		"</tr>\n"
-		"</table>\n"
-		"<input type=\"hidden\" name=\"genstats\" value=\"1\" />\n"
-	);
-
-	g_pages.printFormData( buf, st->m_socket, &st->m_request );
-
-	buf->safePrintf (
-		"<input type=\"submit\" name=\"action\" value=\"submit\" />"
-		"</div>\n</form>\n</div>\n</div>\n"
-	);
 
 }
 
-time_t genDate( char *date, long dateLen ) {
+
+
+time_t genDate( char *date, int32_t dateLen ) {
 
 	time_t result = -1;
 	// the date string should always be the same length
@@ -664,14 +790,14 @@ time_t genDate( char *date, long dateLen ) {
 
 	//*
 	memset( (char *)&tmRef, 0, sizeof( tmRef ) );
-	time_t now = (time_t)getTimeGlobal();
+	time_t now = (time_t)getTimeGlobalNoCore();
 	localtime_r( &now, &tmRef );
 	now = mktime( &tmRef );
 	// */
 
 	char tmp[18];
 	char *p = tmp;
-	memcpy( p, date, dateLen );
+	gbmemcpy( p, date, dateLen );
 
 	p[2]  = '\0';
 	p[5]  = '\0';
@@ -700,7 +826,7 @@ time_t genDate( char *date, long dateLen ) {
 	else if ( !nowDST.tm_isdst && resultDST.tm_isdst )
 		tmBuild.tm_hour--;
 
-	memcpy( p, date, dateLen );
+	gbmemcpy( p, date, dateLen );
 	p[16] = '\0';
 	log ( LOG_DEBUG, "stats: user string        [%s]", p );
 	log ( LOG_DEBUG, "stats: user provided time [%s]", ctime( &result ) );
